@@ -59,6 +59,15 @@ Two request paths share one database:
 
 Adding a platform = one `ChannelAdapter` subclass registered in the registry; nothing else changes.
 
+## Project skills
+
+Reusable playbooks live in `.claude/skills/` — prefer them over improvising:
+
+- `/verify` — layered stack verification (pytest, FE build, worker container, live webhook smoke test)
+- `/add-channel-adapter` — integrate a new platform (Telegram/Slack/...) via `ChannelAdapter`
+- `/extend-agent` — add an LLM provider, tool, skill, or prompt template without touching agent logic
+- `/db-migration` — Alembic workflow incl. pgvector pitfalls autogenerate misses
+
 ## Gotchas
 
 - Frontend is **Next.js 16** — conventions differ from training data (`src/proxy.ts` replaces `middleware.ts`; dynamic route `params` are async). See `frontend/AGENTS.md` and `node_modules/next/dist/docs/` before writing FE code. shadcn components here are base-ui based (`render={...}` composition), not Radix.
