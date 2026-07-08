@@ -68,6 +68,10 @@ Reusable playbooks live in `.claude/skills/` — prefer them over improvising:
 - `/extend-agent` — add an LLM provider, tool, skill, or prompt template without touching agent logic
 - `/db-migration` — Alembic workflow incl. pgvector pitfalls autogenerate misses
 
+## Progress tracking
+
+`progress.md` tracks status, backlog, and a change log. When completing significant work, update it in the same commit (status table + log row; pull backlog items when picking them up).
+
 ## Gotchas
 
 - Frontend is **Next.js 16** — conventions differ from training data (`src/proxy.ts` replaces `middleware.ts`; dynamic route `params` are async). See `frontend/AGENTS.md` and `node_modules/next/dist/docs/` before writing FE code. shadcn components here are base-ui based (`render={...}` composition), not Radix.
