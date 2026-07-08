@@ -287,7 +287,7 @@ export default function DomainsPage() {
                   </TableCell>
                   <TableCell className="text-right">
                     <div className="flex items-center justify-end gap-1">
-                      <Button variant="ghost" size="icon-sm" render={<Link href={`/domains/${domain.id}`} />} aria-label="Documents">
+                      <Button variant="ghost" size="icon-sm" render={<Link href={`/domains/${domain.id}`} />} nativeButton={false} aria-label="Documents">
                         <FileText />
                       </Button>
                       <Button

@@ -191,6 +191,7 @@ export default function DomainDocumentsPage({
           variant="ghost"
           size="sm"
           render={<Link href="/domains" />}
+          nativeButton={false}
           className="mb-2 -ml-2"
         >
           <ArrowLeftIcon />

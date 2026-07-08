@@ -188,11 +188,15 @@ export default function PlaygroundPage() {
         </div>
         <div className="flex items-center gap-2">
           <Select
-            value={domainId || undefined}
+            value={domainId}
             onValueChange={(value) => setDomainId(value as string)}
           >
             <SelectTrigger className="w-56">
-              <SelectValue placeholder="Select a domain" />
+              <SelectValue placeholder="Select a domain">
+                {(value) =>
+                  domains.find((domain) => domain.id === value)?.name ?? ""
+                }
+              </SelectValue>
             </SelectTrigger>
             <SelectContent>
               {domains.map((domain) => (
