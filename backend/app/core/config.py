@@ -34,6 +34,12 @@ class Settings(BaseSettings):
 
     UPLOAD_DIR: str = str(Path(__file__).resolve().parents[2] / "data" / "uploads")
 
+    CORS_ORIGINS: str = "http://localhost:3000,http://127.0.0.1:3000"
+
+    @property
+    def cors_origins_list(self) -> list[str]:
+        return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
+
 
 @lru_cache
 def get_settings() -> Settings:

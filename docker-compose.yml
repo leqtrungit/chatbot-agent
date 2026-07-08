@@ -49,6 +49,8 @@ services:
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       CHAT_MODEL: ${CHAT_MODEL:-qwen2.5}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-nomic-embed-text}
+    volumes:
+      - ./backend/data/uploads:/app/data/uploads
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
