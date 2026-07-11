@@ -12,9 +12,10 @@ Living document tracking project status. Update this file in the same commit as 
 | Document ingestion | ✅ Done | PDF/DOCX/TXT/MD → extract → chunk → embed → pgvector (HNSW cosine), async via arq |
 | Agent framework (`app/agent/`) | ✅ Done | pure library: builder, dynamic tool loop, prompt templates, skills, Ollama adapter |
 | Webhook + jobs (async AI branch) | ✅ Done | `POST /api/webhooks/{platform}` → queue → worker → `GET /api/jobs/{id}` polling |
+| Webhook auth + rate limiting | ✅ Done | `app/modules/apikey/` (admin CRUD, `X-API-Key`), fixed-window Redis rate limit per key + per session (Phase A of webhook-auth/memory/OpenAI-provider plan) |
 | Channels | ✅ Generic only | `GenericAdapter`; real platforms not integrated yet |
-| Frontend admin | ✅ Done | login, domains CRUD, documents upload + status, chat playground (Next.js 16) |
-| Tests | ✅ 100 passing | TDD, LLM/embedding fully mocked |
+| Frontend admin | ✅ Done | login, domains CRUD, documents upload + status, chat playground (Next.js 16), API keys management |
+| Tests | ✅ 117 passing | TDD, LLM/embedding fully mocked |
 | Real-LLM e2e | ⏳ Blocked | Ollama not installed on host yet |
 | CI | ❌ Not started | |
 | Deployment | ❌ Not started | local docker compose only |
@@ -36,3 +37,4 @@ Living document tracking project status. Update this file in the same commit as 
 | 2026-07-08 | Kickoff: full platform built (BE 100 tests, FE build green, worker container running); repo pushed to `leqtrungit/chatbot-agent` |
 | 2026-07-08 | Docs: README, CLAUDE.md, 4 project skills (`verify`, `add-channel-adapter`, `extend-agent`, `db-migration`) |
 | 2026-07-08 | Added this progress tracker |
+| 2026-07-11 | Phase A of webhook-auth/memory/OpenAI-provider plan: `app/modules/apikey/` (model+migration `e272b45380b3`, admin CRUD), `require_api_key` on webhook + job-status endpoints, `app/core/ratelimit.py` fixed-window Redis limiter (per-key + per-session, 429 + Retry-After), FE `api-keys` page + nav + playground API key input. BE 117 tests passing, FE build green. Not yet committed. |

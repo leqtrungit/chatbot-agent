@@ -13,10 +13,26 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.core.config import get_settings
 from app.core.db import Base, get_session
+from app.modules.apikey import models as apikey_models  # noqa: F401
 from app.modules.document import models as document_models  # noqa: F401
 from app.modules.domain import models as domain_models  # noqa: F401
 
 TEST_DB_NAME = "chatbot_test"
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _reset_arq_pool() -> AsyncIterator[None]:
+    """``app.modules.webhook.jobs`` caches the arq/redis pool in a module
+    global; pytest-asyncio gives each test its own event loop, so a pool
+    created in a previous test's loop breaks ("Event loop is closed") if
+    reused here. Reset the singleton around every test."""
+    import app.modules.webhook.jobs as job_helpers
+
+    job_helpers._pool = None
+    yield
+    if job_helpers._pool is not None:
+        await job_helpers._pool.aclose()
+    job_helpers._pool = None
 
 
 def _server_dsn() -> str:
@@ -108,3 +124,16 @@ def admin_auth_header() -> dict[str, str]:
         f"{settings.ADMIN_USERNAME}:{settings.ADMIN_PASSWORD}".encode()
     ).decode()
     return {"Authorization": f"Basic {token}"}
+
+
+@pytest_asyncio.fixture
+async def api_key_header(client: AsyncClient, admin_auth_header: dict[str, str]) -> dict[str, str]:
+    """Creates a fresh active API key through the admin API and returns the
+    ``X-API-Key`` header ready to attach to a webhook/job request."""
+    resp = await client.post(
+        "/api/api-keys",
+        json={"name": "Test App"},
+        headers=admin_auth_header,
+    )
+    assert resp.status_code == 201, resp.text
+    return {"X-API-Key": resp.json()["key"]}

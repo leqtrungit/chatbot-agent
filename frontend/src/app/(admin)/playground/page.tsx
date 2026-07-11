@@ -32,6 +32,8 @@ function newId() {
     : Math.random().toString(36).slice(2);
 }
 
+const API_KEY_STORAGE_KEY = "playground_api_key";
+
 export default function PlaygroundPage() {
   const [domains, setDomains] = useState<Domain[]>([]);
   const [domainId, setDomainId] = useState<string>("");
@@ -40,7 +42,18 @@ export default function PlaygroundPage() {
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [jobStatusText, setJobStatusText] = useState<string | null>(null);
+  const [apiKey, setApiKey] = useState<string>("");
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const stored = window.localStorage.getItem(API_KEY_STORAGE_KEY);
+    if (stored) setApiKey(stored);
+  }, []);
+
+  function handleApiKeyChange(value: string) {
+    setApiKey(value);
+    window.localStorage.setItem(API_KEY_STORAGE_KEY, value);
+  }
 
   useEffect(() => {
     async function load() {
@@ -89,7 +102,7 @@ export default function PlaygroundPage() {
 
       let job;
       try {
-        job = await getJob(jobId);
+        job = await getJob(jobId, apiKey);
       } catch (err) {
         setMessages((prev) => [
           ...prev,
@@ -142,7 +155,7 @@ export default function PlaygroundPage() {
   async function handleSend(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const trimmed = input.trim();
-    if (!trimmed || !domainId || sending) return;
+    if (!trimmed || !domainId || !apiKey.trim() || sending) return;
 
     setMessages((prev) => [
       ...prev,
@@ -153,11 +166,14 @@ export default function PlaygroundPage() {
     setJobStatusText("queued");
 
     try {
-      const { job_id } = await sendChatMessage({
-        domain_id: domainId,
-        session_id: sessionId,
-        message: trimmed,
-      });
+      const { job_id } = await sendChatMessage(
+        {
+          domain_id: domainId,
+          session_id: sessionId,
+          message: trimmed,
+        },
+        apiKey
+      );
       await pollJob(job_id);
     } catch (err) {
       setMessages((prev) => [
@@ -187,6 +203,14 @@ export default function PlaygroundPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <Input
+            className="w-48"
+            type="password"
+            placeholder="X-API-Key"
+            value={apiKey}
+            onChange={(e) => handleApiKeyChange(e.target.value)}
+            aria-label="API key"
+          />
           <Select
             value={domainId}
             onValueChange={(value) => setDomainId(value as string)}
@@ -216,6 +240,12 @@ export default function PlaygroundPage() {
           </Button>
         </div>
       </div>
+      {!apiKey.trim() ? (
+        <p className="text-sm text-muted-foreground">
+          Enter an API key above (create one on the API Keys page) to send
+          messages.
+        </p>
+      ) : null}
 
       <div className="flex flex-1 flex-col overflow-hidden rounded-xl border">
         <div
@@ -270,11 +300,18 @@ export default function PlaygroundPage() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             placeholder={
-              domainId ? "Type a message..." : "Select a domain first"
+              !apiKey.trim()
+                ? "Enter an API key above first"
+                : domainId
+                  ? "Type a message..."
+                  : "Select a domain first"
             }
-            disabled={!domainId || sending}
+            disabled={!domainId || !apiKey.trim() || sending}
           />
-          <Button type="submit" disabled={!domainId || !input.trim() || sending}>
+          <Button
+            type="submit"
+            disabled={!domainId || !apiKey.trim() || !input.trim() || sending}
+          >
             {sending ? (
               <Loader2Icon className="animate-spin" />
             ) : (
