@@ -8,6 +8,8 @@ import pytest
 from sqlalchemy import select
 
 from app.agent.core.types import LLMResponse, Role, ToolCall
+from app.agent.providers.ollama import OllamaProvider
+from app.agent.providers.openai_compat import OpenAICompatProvider
 from app.core.config import get_settings
 from app.modules.conversation.models import ChatMessage
 from app.modules.domain.models import Domain
@@ -326,3 +328,30 @@ async def test_process_chat_job_does_not_persist_when_agent_raises(session_maker
             .all()
         )
     assert rows == []
+
+
+def test_build_llm_provider_defaults_to_ollama():
+    settings = get_settings().model_copy(update={"LLM_PROVIDER": "ollama", "OLLAMA_BASE_URL": "http://ollama.local"})
+    provider = tasks.build_llm_provider(settings)
+    assert isinstance(provider, OllamaProvider)
+    assert provider.base_url == "http://ollama.local"
+
+
+def test_build_llm_provider_returns_openai_compat_provider():
+    settings = get_settings().model_copy(
+        update={
+            "LLM_PROVIDER": "openai",
+            "OPENAI_BASE_URL": "http://openai.local/v1",
+            "OPENAI_API_KEY": "sk-test",
+        }
+    )
+    provider = tasks.build_llm_provider(settings)
+    assert isinstance(provider, OpenAICompatProvider)
+    assert provider.base_url == "http://openai.local/v1"
+    assert provider.api_key == "sk-test"
+
+
+def test_build_llm_provider_raises_on_unknown_provider():
+    settings = get_settings().model_copy(update={"LLM_PROVIDER": "bogus"})
+    with pytest.raises(ValueError):
+        tasks.build_llm_provider(settings)

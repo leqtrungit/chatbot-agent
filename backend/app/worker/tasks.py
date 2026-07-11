@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.agent import AgentBuilder, KnowledgeSearchTool
 from app.agent.providers.base import EmbeddingProvider, LLMProvider
 from app.agent.providers.ollama import OllamaEmbeddingProvider, OllamaProvider
+from app.agent.providers.openai_compat import OpenAICompatProvider
 from app.agent.tools.knowledge_search import KnowledgeSearcher
 from app.channels.base import OutgoingMessage
 from app.channels.registry import ChannelNotRegisteredError, get_channel_registry
@@ -28,7 +29,11 @@ from app.modules.knowledge.searcher import PgVectorKnowledgeSearcher
 
 
 def build_llm_provider(settings: Settings) -> LLMProvider:
-    return OllamaProvider(settings.OLLAMA_BASE_URL)
+    if settings.LLM_PROVIDER == "ollama":
+        return OllamaProvider(settings.OLLAMA_BASE_URL)
+    if settings.LLM_PROVIDER == "openai":
+        return OpenAICompatProvider(settings.OPENAI_BASE_URL, settings.OPENAI_API_KEY)
+    raise ValueError(f"Unknown LLM_PROVIDER: {settings.LLM_PROVIDER!r}")
 
 
 def build_embedding_provider(settings: Settings) -> EmbeddingProvider:

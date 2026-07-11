@@ -24,7 +24,10 @@ class Settings(BaseSettings):
     ADMIN_USERNAME: str = "admin"
     ADMIN_PASSWORD: str = "admin"
 
+    LLM_PROVIDER: str = "ollama"
     OLLAMA_BASE_URL: str = "http://localhost:11434"
+    OPENAI_BASE_URL: str = "https://api.openai.com/v1"
+    OPENAI_API_KEY: str = ""
     CHAT_MODEL: str = "qwen2.5"
     EMBEDDING_MODEL: str = "nomic-embed-text"
     EMBEDDING_DIM: int = 768
