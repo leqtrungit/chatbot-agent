@@ -13,9 +13,10 @@ Living document tracking project status. Update this file in the same commit as 
 | Agent framework (`app/agent/`) | ✅ Done | pure library: builder, dynamic tool loop, prompt templates, skills, Ollama adapter |
 | Webhook + jobs (async AI branch) | ✅ Done | `POST /api/webhooks/{platform}` → queue → worker → `GET /api/jobs/{id}` polling |
 | Webhook auth + rate limiting | ✅ Done | `app/modules/apikey/` (admin CRUD, `X-API-Key`), fixed-window Redis rate limit per key + per session (Phase A of webhook-auth/memory/OpenAI-provider plan) |
+| Conversation memory | ✅ Done | `app/modules/conversation/` (`chat_messages` table, migration `e717eccd3cad`), worker loads last `CHAT_HISTORY_LIMIT` turns and persists each turn after the agent replies (Phase B of same plan) |
 | Channels | ✅ Generic only | `GenericAdapter`; real platforms not integrated yet |
 | Frontend admin | ✅ Done | login, domains CRUD, documents upload + status, chat playground (Next.js 16), API keys management |
-| Tests | ✅ 117 passing | TDD, LLM/embedding fully mocked |
+| Tests | ✅ 122 passing | TDD, LLM/embedding fully mocked |
 | Real-LLM e2e | ⏳ Blocked | Ollama not installed on host yet |
 | CI | ❌ Not started | |
 | Deployment | ❌ Not started | local docker compose only |
@@ -28,7 +29,8 @@ Living document tracking project status. Update this file in the same commit as 
 4. Push-based responses: implement `send_response()` for platforms that support it (today: polling only).
 5. Replace hardcoded basic auth with real user accounts when multi-admin is needed.
 6. Ingestion niceties: re-ingest/retry failed documents from the UI, chunk size tuning per domain.
-7. Conversation memory: persist chat history per `session_id` and feed it to the agent as `history`.
+7. ~~Conversation memory~~ — done (see Phase B log entry below).
+8. Phase C of webhook-auth/memory/OpenAI-provider plan: OpenAI-compatible LLM provider (`app/agent/providers/openai_compat.py`) + `LLM_PROVIDER` setting wiring.
 
 ## Log
 
@@ -38,3 +40,4 @@ Living document tracking project status. Update this file in the same commit as 
 | 2026-07-08 | Docs: README, CLAUDE.md, 4 project skills (`verify`, `add-channel-adapter`, `extend-agent`, `db-migration`) |
 | 2026-07-08 | Added this progress tracker |
 | 2026-07-11 | Phase A of webhook-auth/memory/OpenAI-provider plan: `app/modules/apikey/` (model+migration `e272b45380b3`, admin CRUD), `require_api_key` on webhook + job-status endpoints, `app/core/ratelimit.py` fixed-window Redis limiter (per-key + per-session, 429 + Retry-After), FE `api-keys` page + nav + playground API key input. BE 117 tests passing, FE build green. Not yet committed. |
+| 2026-07-11 | Phase B of same plan: `app/modules/conversation/` (`ChatMessage` model + migration `e717eccd3cad`, `load_history`/`append_turn`), new setting `CHAT_HISTORY_LIMIT` (default 20), `process_chat_job` now loads history before `agent.run(text, history=...)` and persists the user+assistant turn after a successful reply (nothing persisted if the agent raises). `app/agent/` untouched. BE 122 tests passing. Not yet committed. |

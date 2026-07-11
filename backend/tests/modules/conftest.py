@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.core.config import get_settings
 from app.core.db import Base, get_session
 from app.modules.apikey import models as apikey_models  # noqa: F401
+from app.modules.conversation import models as conversation_models  # noqa: F401
 from app.modules.document import models as document_models  # noqa: F401
 from app.modules.domain import models as domain_models  # noqa: F401
 

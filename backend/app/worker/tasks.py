@@ -20,6 +20,7 @@ from app.agent.tools.knowledge_search import KnowledgeSearcher
 from app.channels.base import OutgoingMessage
 from app.channels.registry import ChannelNotRegisteredError, get_channel_registry
 from app.core.config import Settings, get_settings
+from app.modules.conversation.service import append_turn, load_history
 from app.modules.document.pipeline.ingest import ingest_document
 from app.modules.domain.models import Domain
 from app.modules.domain.service import get_domain
@@ -90,13 +91,19 @@ async def process_chat_job(
     embedding_provider: EmbeddingProvider = ctx["embedding_provider"]
     settings: Settings = ctx["settings"]
 
+    domain_uuid = uuid.UUID(domain_id)
+
     async with session_maker() as session:
-        domain = await get_domain(session, uuid.UUID(domain_id))
+        domain = await get_domain(session, domain_uuid)
+        history = await load_history(session, domain_uuid, session_id, settings.CHAT_HISTORY_LIMIT)
 
     searcher = PgVectorKnowledgeSearcher(session_maker, embedding_provider, settings.EMBEDDING_MODEL)
     agent = build_domain_agent(domain, settings=settings, searcher=searcher)
 
-    response = await agent.run(text)
+    response = await agent.run(text, history=history)
+
+    async with session_maker() as session:
+        await append_turn(session, domain_uuid, session_id, text, response.content)
 
     registry = get_channel_registry()
     try:

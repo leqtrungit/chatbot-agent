@@ -31,6 +31,7 @@ class Settings(BaseSettings):
 
     AGENT_SYSTEM_PROMPT_TEMPLATE: str = "domain_qa"
     AGENT_MAX_ITERATIONS: int = 10
+    CHAT_HISTORY_LIMIT: int = 20
 
     UPLOAD_DIR: str = str(Path(__file__).resolve().parents[2] / "data" / "uploads")
 
