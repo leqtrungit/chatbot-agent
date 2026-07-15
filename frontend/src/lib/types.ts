@@ -57,3 +57,23 @@ export interface Job {
   status: JobStatus;
   result: JobResult | null;
 }
+
+export interface ApiKey {
+  id: string;
+  name: string;
+  key_prefix: string;
+  rate_limit_per_minute?: number | null;
+  created_at: string;
+  revoked_at?: string | null;
+}
+
+export interface CreateApiKeyInput {
+  name: string;
+  rate_limit_per_minute?: number;
+}
+
+export interface CreateApiKeyResponse {
+  id: string;
+  name: string;
+  key: string;
+}

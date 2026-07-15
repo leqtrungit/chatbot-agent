@@ -1,5 +1,8 @@
 import { clearAuthToken, getAuthHeader } from "@/lib/auth";
 import type {
+  ApiKey,
+  CreateApiKeyInput,
+  CreateApiKeyResponse,
   CreateDomainInput,
   Document,
   Domain,
@@ -153,21 +156,45 @@ export function deleteDocument(id: string): Promise<void> {
   return request<void>(`/api/documents/${id}`, { method: "DELETE" });
 }
 
-// ---- Webhook / Jobs (no auth) ----
+// ---- API keys ----
 
-export function sendChatMessage(
-  input: SendChatMessageInput
-): Promise<SendChatMessageResponse> {
-  return request<SendChatMessageResponse>("/api/webhooks/generic", {
-    auth: false,
+export function listApiKeys(): Promise<ApiKey[]> {
+  return request<ApiKey[]>("/api/api-keys");
+}
+
+export function createApiKey(
+  input: CreateApiKeyInput
+): Promise<CreateApiKeyResponse> {
+  return request<CreateApiKeyResponse>("/api/api-keys", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(input),
   });
 }
 
-export function getJob(jobId: string): Promise<Job> {
-  return request<Job>(`/api/jobs/${jobId}`, { auth: false });
+export function revokeApiKey(id: string): Promise<ApiKey> {
+  return request<ApiKey>(`/api/api-keys/${id}/revoke`, { method: "POST" });
+}
+
+// ---- Webhook / Jobs (no admin auth — authenticated via X-API-Key) ----
+
+export function sendChatMessage(
+  input: SendChatMessageInput,
+  apiKey: string
+): Promise<SendChatMessageResponse> {
+  return request<SendChatMessageResponse>("/api/webhooks/generic", {
+    auth: false,
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-API-Key": apiKey },
+    body: JSON.stringify(input),
+  });
+}
+
+export function getJob(jobId: string, apiKey: string): Promise<Job> {
+  return request<Job>(`/api/jobs/${jobId}`, {
+    auth: false,
+    headers: { "X-API-Key": apiKey },
+  });
 }
 
 export { API_BASE_URL };

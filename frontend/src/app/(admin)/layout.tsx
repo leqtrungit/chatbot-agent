@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Bot, FolderKanban, LogOut, MessageSquare, User } from "lucide-react";
+import { Bot, FolderKanban, KeyRound, LogOut, MessageSquare, User } from "lucide-react";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
@@ -18,6 +18,7 @@ import { cn } from "@/lib/utils";
 
 const NAV_ITEMS = [
   { href: "/domains", label: "Domains", icon: FolderKanban },
+  { href: "/api-keys", label: "API Keys", icon: KeyRound },
   { href: "/playground", label: "Playground", icon: MessageSquare },
 ];
 
