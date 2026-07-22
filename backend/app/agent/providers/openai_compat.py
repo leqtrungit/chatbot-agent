@@ -10,11 +10,11 @@ mirror the same schema) by pointing ``base_url`` at it.
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, AsyncIterator
 
 import httpx
 
-from app.agent.core.types import LLMResponse, Message, ModelParams, Role, ToolCall
+from app.agent.core.types import LLMResponse, Message, ModelParams, Role, StreamChunk, ToolCall
 
 
 def _message_to_openai(message: Message) -> dict[str, Any]:
@@ -136,6 +136,127 @@ class OpenAICompatProvider:
             tool_calls=tool_calls,
             finish_reason=choice.get("finish_reason"),
             usage=usage,
+        )
+
+    async def chat_stream(
+        self,
+        messages: list[Message],
+        *,
+        model: str,
+        tools: list[dict[str, Any]] | None = None,
+        params: ModelParams | None = None,
+    ) -> AsyncIterator[StreamChunk]:
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": [_message_to_openai(m) for m in messages],
+            "stream": True,  # Explicitly enable streaming
+        }
+        if tools:
+            payload["tools"] = [_tool_to_openai(t) for t in tools]
+        payload.update(_params_to_body(params))
+
+        # Accumulate streamed content and tool calls across deltas
+        content = ""
+        finish_reason: str | None = None
+        tool_accum: dict[int, dict] = {}  # keyed by tool call index
+
+        async with self._client.stream(
+            "POST",
+            "/chat/completions",
+            json=payload,
+            headers={"Authorization": f"Bearer {self.api_key}"},
+        ) as response:
+            response.raise_for_status()
+
+            async for line in response.aiter_lines():
+                # Skip blank lines
+                if not line:
+                    continue
+
+                # Only process lines starting with "data:"
+                if not line.startswith("data:"):
+                    continue
+
+                # Strip the "data:" prefix and leading/trailing whitespace
+                data_str = line[5:].strip()
+
+                # Check for terminal marker
+                if data_str == "[DONE]":
+                    break
+
+                # Parse the JSON chunk
+                try:
+                    chunk = json.loads(data_str)
+                except json.JSONDecodeError:
+                    continue
+
+                # Extract the first choice
+                if "choices" not in chunk or not chunk["choices"]:
+                    continue
+
+                choice = chunk["choices"][0]
+                delta = choice.get("delta", {})
+
+                # Track whether we yielded anything for this SSE line
+                has_content = False
+
+                # Accumulate text content
+                if delta.get("content"):
+                    content += delta["content"]
+                    has_content = True
+                    # Yield incremental delta chunk
+                    yield StreamChunk(delta=delta["content"], done=False)
+
+                # Accumulate tool calls by index
+                if delta.get("tool_calls"):
+                    has_content = True
+                    for tc_delta in delta["tool_calls"]:
+                        idx = tc_delta["index"]
+                        entry = tool_accum.setdefault(
+                            idx, {"id": "", "name": "", "arguments": ""}
+                        )
+
+                        # Set id if present (typically only on first delta for this tool call)
+                        if "id" in tc_delta:
+                            entry["id"] = tc_delta["id"]
+
+                        # Set name if present (typically only on first delta for this tool call)
+                        fn = tc_delta.get("function", {})
+                        if fn.get("name"):
+                            entry["name"] = fn["name"]
+
+                        # Accumulate arguments (concatenate on each delta)
+                        if fn.get("arguments"):
+                            entry["arguments"] += fn["arguments"]
+
+                    # Yield a delta chunk for tool calls (with empty delta text)
+                    yield StreamChunk(delta="", done=False)
+
+                # Track finish_reason (keep overwriting so the last non-null one wins)
+                if choice.get("finish_reason"):
+                    finish_reason = choice["finish_reason"]
+
+        # Build final tool_calls list, sorted by index for deterministic order
+        tool_calls = [
+            ToolCall(
+                id=entry["id"],
+                name=entry["name"],
+                arguments=_parse_arguments(entry["arguments"]),
+            )
+            for _, entry in sorted(tool_accum.items())
+        ]
+
+        # Yield final chunk with complete response
+        # Note: usage is deliberately left empty (scope cut; not requesting
+        # stream_options.include_usage from OpenAI)
+        yield StreamChunk(
+            done=True,
+            response=LLMResponse(
+                content=content,
+                tool_calls=tool_calls,
+                finish_reason=finish_reason,
+                usage={},
+            ),
         )
 
     async def aclose(self) -> None:
