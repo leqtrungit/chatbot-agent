@@ -5,7 +5,7 @@ import json
 import httpx
 import pytest
 
-from app.agent.core.types import Message, ModelParams, Role, ToolCall, ToolResult
+from app.agent.core.types import Message, ModelParams, Role, StreamChunk, ToolCall, ToolResult
 from app.agent.providers.ollama import OllamaEmbeddingProvider, OllamaProvider
 
 
@@ -165,6 +165,85 @@ async def test_chat_response_tool_call_arguments_as_json_string():
     provider = make_provider(handler)
     response = await provider.chat([Message(role=Role.USER, content="hi")], model="llama3")
     assert response.tool_calls[0].arguments == {"query": "x"}
+
+
+async def test_chat_stream_sends_stream_true():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        # Return valid streaming NDJSON response
+        return httpx.Response(
+            200,
+            content=b'{"message":{"content":"hello"},"done":true,"done_reason":"stop"}\n',
+        )
+
+    provider = make_provider(handler)
+    messages = [Message(role=Role.USER, content="hi")]
+    chunks = [c async for c in provider.chat_stream(messages, model="llama3")]
+
+    assert captured["body"]["stream"] is True
+
+
+async def test_chat_stream_yields_incremental_deltas_then_final():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=b'{"message":{"content":"Hel"},"done":false}\n{"message":{"content":"lo!"},"done":false}\n{"message":{"content":""},"done":true,"done_reason":"stop","prompt_eval_count":5,"eval_count":3}\n',
+        )
+
+    provider = make_provider(handler)
+    chunks = [c async for c in provider.chat_stream([Message(role=Role.USER, content="hi")], model="llama3")]
+
+    assert len(chunks) == 3
+    assert chunks[0] == StreamChunk(delta="Hel")
+    assert chunks[1] == StreamChunk(delta="lo!")
+    assert chunks[2].done is True
+    assert chunks[2].response.content == "Hello!"
+    assert chunks[2].response.finish_reason == "stop"
+    assert chunks[2].response.usage == {"prompt_eval_count": 5, "eval_count": 3}
+
+
+async def test_chat_stream_captures_tool_calls_on_final_line():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=b'{"message":{"content":""},"done":false}\n{"message":{"content":"","tool_calls":[{"function":{"name":"search","arguments":{"q":"x"}}}]},"done":true,"done_reason":"tool_calls"}\n',
+        )
+
+    provider = make_provider(handler)
+    chunks = [c async for c in provider.chat_stream([Message(role=Role.USER, content="hi")], model="llama3")]
+
+    assert chunks[-1].done is True
+    assert len(chunks[-1].response.tool_calls) == 1
+    assert chunks[-1].response.tool_calls[0].id == "call_0"
+    assert chunks[-1].response.tool_calls[0].name == "search"
+    assert chunks[-1].response.tool_calls[0].arguments == {"q": "x"}
+
+
+async def test_chat_stream_parses_string_json_tool_arguments():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=b'{"message":{"content":"","tool_calls":[{"function":{"name":"search","arguments":"{\\"q\\":\\"x\\"}"}}]},"done":true,"done_reason":"tool_calls"}\n',
+        )
+
+    provider = make_provider(handler)
+    chunks = [c async for c in provider.chat_stream([Message(role=Role.USER, content="hi")], model="llama3")]
+
+    assert len(chunks[-1].response.tool_calls) == 1
+    assert chunks[-1].response.tool_calls[0].arguments == {"q": "x"}
+
+
+async def test_chat_stream_raises_on_http_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="Internal Server Error")
+
+    provider = make_provider(handler)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        async for _ in provider.chat_stream([Message(role=Role.USER, content="hi")], model="llama3"):
+            pass
 
 
 async def test_embedding_provider_parses_embeddings():
