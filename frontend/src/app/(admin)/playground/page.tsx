@@ -12,7 +12,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { ApiError, getJob, listDomains, sendChatMessage } from "@/lib/api";
+import {
+  ApiError,
+  getJob,
+  listDomains,
+  sendChatMessage, // eslint-disable-line @typescript-eslint/no-unused-vars
+  streamChatMessage,
+  type ChatStreamEvent,
+} from "@/lib/api";
 import type { Domain, JobStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -83,6 +90,7 @@ export default function PlaygroundPage() {
     setJobStatusText(null);
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   async function pollJob(jobId: string): Promise<void> {
     const start = Date.now();
 
@@ -165,16 +173,61 @@ export default function PlaygroundPage() {
     setSending(true);
     setJobStatusText("queued");
 
+    let assistantMessageCreated = false;
+
     try {
-      const { job_id } = await sendChatMessage(
+      await streamChatMessage(
         {
           domain_id: domainId,
           session_id: sessionId,
           message: trimmed,
         },
-        apiKey
+        apiKey,
+        (streamEvent: ChatStreamEvent) => {
+          if (streamEvent.type === "queued") {
+            setJobStatusText("processing");
+          } else if (streamEvent.type === "token") {
+            const delta = streamEvent.delta || "";
+            if (!assistantMessageCreated) {
+              // Create assistant message on first token
+              setMessages((prev) => [
+                ...prev,
+                {
+                  id: newId(),
+                  role: "assistant",
+                  content: delta,
+                },
+              ]);
+              assistantMessageCreated = true;
+            } else {
+              // Append delta to existing assistant message
+              setMessages((prev) => {
+                const updated = [...prev];
+                const lastMsg = updated[updated.length - 1];
+                if (lastMsg && lastMsg.role === "assistant") {
+                  updated[updated.length - 1] = {
+                    ...lastMsg,
+                    content: lastMsg.content + delta,
+                  };
+                }
+                return updated;
+              });
+            }
+          } else if (streamEvent.type === "done") {
+            setJobStatusText(null);
+          } else if (streamEvent.type === "error") {
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: newId(),
+                role: "error",
+                content: streamEvent.message || "An error occurred.",
+              },
+            ]);
+            setJobStatusText(null);
+          }
+        }
       );
-      await pollJob(job_id);
     } catch (err) {
       setMessages((prev) => [
         ...prev,

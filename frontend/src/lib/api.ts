@@ -12,6 +12,17 @@ import type {
   UpdateDomainInput,
 } from "@/lib/types";
 
+export interface ChatStreamEvent {
+  type: "queued" | "token" | "done" | "error";
+  job_id?: string;
+  delta?: string;
+  reply?: string;
+  session_id?: string;
+  iterations?: number;
+  stopped_on?: string;
+  message?: string;
+}
+
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -195,6 +206,63 @@ export function getJob(jobId: string, apiKey: string): Promise<Job> {
     auth: false,
     headers: { "X-API-Key": apiKey },
   });
+}
+
+export async function streamChatMessage(
+  input: SendChatMessageInput,
+  apiKey: string,
+  onEvent: (event: ChatStreamEvent) => void,
+  signal?: AbortSignal
+): Promise<void> {
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}/api/chat/stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-API-Key": apiKey },
+      body: JSON.stringify(input),
+      signal,
+    });
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") {
+      throw new ApiError(0, "Request cancelled");
+    }
+    throw new ApiError(0, "Network error: could not reach the server");
+  }
+
+  if (!response.ok || !response.body) {
+    const detail = await parseErrorDetail(response);
+    throw new ApiError(response.status, detail);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+
+      let sep;
+      while ((sep = buffer.indexOf("\n\n")) !== -1) {
+        const frame = buffer.slice(0, sep);
+        buffer = buffer.slice(sep + 2);
+
+        const line = frame.split("\n").find((l) => l.startsWith("data:"));
+        if (!line) continue;
+
+        try {
+          onEvent(JSON.parse(line.slice(5).trim()) as ChatStreamEvent);
+        } catch (err) {
+          console.error("Failed to parse SSE frame:", err);
+        }
+      }
+    }
+  } finally {
+    reader.cancel();
+  }
 }
 
 export { API_BASE_URL };
