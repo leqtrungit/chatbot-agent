@@ -8,6 +8,7 @@ can monkeypatch them.
 
 from __future__ import annotations
 
+import json
 import uuid
 from typing import Any
 
@@ -124,3 +125,73 @@ async def process_chat_job(
         "iterations": response.iterations,
         "stopped_on": response.stopped_on,
     }
+
+
+async def process_chat_job_stream(
+    ctx: dict[str, Any],
+    *,
+    domain_id: str,
+    session_id: str,
+    text: str,
+    metadata: dict[str, Any],
+    platform: str,
+) -> dict[str, Any]:
+    """Streaming version of process_chat_job: publishes token deltas to Redis pubsub."""
+    session_maker: async_sessionmaker[AsyncSession] = ctx["session_maker"]
+    embedding_provider: EmbeddingProvider = ctx["embedding_provider"]
+    settings: Settings = ctx["settings"]
+    redis = ctx["redis"]
+    job_id = ctx["job_id"]
+
+    domain_uuid = uuid.UUID(domain_id)
+    channel = f"chat:job:{job_id}"
+
+    async with session_maker() as session:
+        domain = await get_domain(session, domain_uuid)
+        history = await load_history(session, domain_uuid, session_id, settings.CHAT_HISTORY_LIMIT)
+
+    searcher = PgVectorKnowledgeSearcher(session_maker, embedding_provider, settings.EMBEDDING_MODEL)
+    agent = build_domain_agent(domain, settings=settings, searcher=searcher)
+
+    try:
+        response = None
+        async for event in agent.run_stream(text, history=history):
+            if event.type == "delta":
+                await redis.publish(channel, json.dumps({"type": "token", "delta": event.delta}))
+            elif event.type == "final":
+                response = event.response
+
+        # Persist the turn
+        async with session_maker() as session:
+            await append_turn(session, domain_uuid, session_id, text, response.content)
+
+        # Send response via adapter if registered
+        registry = get_channel_registry()
+        try:
+            adapter = registry.get(platform)
+        except ChannelNotRegisteredError:
+            adapter = None
+        if adapter is not None:
+            await adapter.send_response(OutgoingMessage(session_id=session_id, text=response.content, metadata=metadata))
+
+        # Publish done message
+        await redis.publish(
+            channel,
+            json.dumps({
+                "type": "done",
+                "reply": response.content,
+                "session_id": session_id,
+                "iterations": response.iterations,
+                "stopped_on": response.stopped_on,
+            }),
+        )
+
+        return {
+            "reply": response.content,
+            "session_id": session_id,
+            "iterations": response.iterations,
+            "stopped_on": response.stopped_on,
+        }
+    except Exception as exc:
+        await redis.publish(channel, json.dumps({"type": "error", "message": str(exc)}))
+        raise

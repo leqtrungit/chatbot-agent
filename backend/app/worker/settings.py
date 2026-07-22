@@ -9,7 +9,12 @@ from arq.connections import RedisSettings
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.config import get_settings
-from app.worker.tasks import build_embedding_provider, ingest_document_task, process_chat_job
+from app.worker.tasks import (
+    build_embedding_provider,
+    ingest_document_task,
+    process_chat_job,
+    process_chat_job_stream,
+)
 
 _settings = get_settings()
 
@@ -33,6 +38,7 @@ class WorkerSettings:
     functions = [
         func(ingest_document_task, name="ingest_document"),
         func(process_chat_job, name="process_chat_job"),
+        func(process_chat_job_stream, name="process_chat_job_stream"),
     ]
     redis_settings = RedisSettings.from_dsn(_settings.REDIS_URL)
     on_startup = startup
