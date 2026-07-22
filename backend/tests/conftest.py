@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, AsyncIterator
 
 import pytest
 
-from app.agent.core.types import LLMResponse, Message, ModelParams
+from app.agent.core.types import LLMResponse, Message, ModelParams, StreamChunk
 
 
 class MockLLMProvider:
@@ -15,6 +15,8 @@ class MockLLMProvider:
     def __init__(self, responses: list[LLMResponse] | None = None):
         self.responses = list(responses or [])
         self.calls: list[dict[str, Any]] = []
+        self.stream_responses: list[list[StreamChunk]] = []
+        self.stream_calls: list[dict[str, Any]] = []
 
     def queue(self, response: LLMResponse) -> None:
         self.responses.append(response)
@@ -33,6 +35,27 @@ class MockLLMProvider:
         if not self.responses:
             return LLMResponse(content="(mock) no response queued", finish_reason="stop")
         return self.responses.pop(0)
+
+    def queue_stream(self, chunks: list[StreamChunk]) -> None:
+        self.stream_responses.append(chunks)
+
+    async def chat_stream(
+        self,
+        messages: list[Message],
+        *,
+        model: str,
+        tools: list[dict[str, Any]] | None = None,
+        params: ModelParams | None = None,
+    ) -> AsyncIterator[StreamChunk]:
+        self.stream_calls.append(
+            {"messages": list(messages), "model": model, "tools": tools, "params": params}
+        )
+        if not self.stream_responses:
+            yield StreamChunk(done=True, response=LLMResponse(content="(mock) no response queued", finish_reason="stop"))
+            return
+        chunks = self.stream_responses.pop(0)
+        for chunk in chunks:
+            yield chunk
 
 
 class MockEmbeddingProvider:

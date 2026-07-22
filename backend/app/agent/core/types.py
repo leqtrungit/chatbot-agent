@@ -9,7 +9,7 @@ interfaces in ``app.agent.providers`` and ``app.agent.tools``.
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -66,6 +66,12 @@ class LLMResponse(BaseModel):
         return len(self.tool_calls) > 0
 
 
+class StreamChunk(BaseModel):
+    delta: str = ""              # NEW text since the last chunk, never cumulative
+    done: bool = False
+    response: LLMResponse | None = None   # set iff done=True; full accumulated response
+
+
 class AgentResponse(BaseModel):
     """Final result of one agent run."""
 
@@ -73,3 +79,9 @@ class AgentResponse(BaseModel):
     messages: list[Message] = Field(default_factory=list)
     iterations: int = 0
     stopped_on: str = "final_answer"  # final_answer | max_iterations | error
+
+
+class AgentStreamEvent(BaseModel):
+    type: Literal["delta", "final"]
+    delta: str = ""               # set iff type=="delta"
+    response: AgentResponse | None = None   # set iff type=="final"

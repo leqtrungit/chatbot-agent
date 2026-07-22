@@ -6,9 +6,9 @@ protocols; agent logic never changes.
 
 from __future__ import annotations
 
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, AsyncIterator, Protocol, runtime_checkable
 
-from app.agent.core.types import LLMResponse, Message, ModelParams
+from app.agent.core.types import LLMResponse, Message, ModelParams, StreamChunk
 
 
 @runtime_checkable
@@ -25,6 +25,22 @@ class LLMProvider(Protocol):
 
         ``tools`` is a list of JSON-schema tool definitions:
         {"name": ..., "description": ..., "input_schema": {...}}
+        """
+        ...
+
+    async def chat_stream(
+        self,
+        messages: list[Message],
+        *,
+        model: str,
+        tools: list[dict[str, Any]] | None = None,
+        params: ModelParams | None = None,
+    ) -> AsyncIterator[StreamChunk]:
+        """Like ``chat`` but yields incremental ``StreamChunk``s.
+
+        Yields zero or more ``StreamChunk(delta=..., done=False)`` chunks,
+        then exactly one ``StreamChunk(delta="", done=True, response=<full LLMResponse>)``
+        and stops. ``response`` is never ``None`` on the ``done=True`` chunk.
         """
         ...
 

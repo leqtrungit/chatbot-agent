@@ -9,14 +9,16 @@ constructor injection (see :class:`app.agent.core.builder.AgentBuilder`).
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, AsyncIterator
 
 from app.agent.core.types import (
     AgentResponse,
+    AgentStreamEvent,
     LLMResponse,
     Message,
     ModelParams,
     Role,
+    StreamChunk,
     ToolCall,
     ToolResult,
 )
@@ -98,6 +100,71 @@ class Agent:
             messages=messages,
             iterations=iterations,
             stopped_on="max_iterations",
+        )
+
+    async def run_stream(
+        self, user_message: str, history: list[Message] | None = None
+    ) -> AsyncIterator[AgentStreamEvent]:
+        messages: list[Message] = [Message(role=Role.SYSTEM, content=self.system_prompt)]
+        messages.extend(history or [])
+        messages.append(Message(role=Role.USER, content=user_message))
+
+        tool_definitions = (
+            [t.to_definition() for t in self.tools] if self.tools else None
+        )
+
+        last_text = ""
+        iterations = 0
+        for iterations in range(1, self.max_iterations + 1):
+            response: LLMResponse | None = None
+            async for chunk in self.llm.chat_stream(
+                messages, model=self.model, tools=tool_definitions, params=self.params,
+            ):
+                if not chunk.done:
+                    if chunk.delta:
+                        yield AgentStreamEvent(type="delta", delta=chunk.delta)
+                    continue
+                response = chunk.response
+            assert response is not None, "LLMProvider.chat_stream contract violated: no done=True chunk with a response"
+
+            if response.content:
+                last_text = response.content
+
+            if not response.has_tool_calls:
+                messages.append(Message(role=Role.ASSISTANT, content=response.content))
+                yield AgentStreamEvent(
+                    type="final",
+                    response=AgentResponse(
+                        content=response.content,
+                        messages=messages,
+                        iterations=iterations,
+                        stopped_on="final_answer",
+                    ),
+                )
+                return
+
+            messages.append(
+                Message(
+                    role=Role.ASSISTANT,
+                    content=response.content,
+                    tool_calls=response.tool_calls,
+                )
+            )
+
+            results = await asyncio.gather(
+                *(self._execute_tool_call(call) for call in response.tool_calls)
+            )
+            for result in results:
+                messages.append(Message(role=Role.TOOL, tool_result=result))
+
+        yield AgentStreamEvent(
+            type="final",
+            response=AgentResponse(
+                content=last_text or _MAX_ITERATIONS_FALLBACK,
+                messages=messages,
+                iterations=iterations,
+                stopped_on="max_iterations",
+            ),
         )
 
     async def _execute_tool_call(self, call: ToolCall) -> ToolResult:
