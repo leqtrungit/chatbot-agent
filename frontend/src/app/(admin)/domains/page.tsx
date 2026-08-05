@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import Link from "next/link";
 import { toast } from "sonner";
-import { FileText, Loader2Icon, PencilIcon, Plus, Trash2Icon } from "lucide-react";
+import { FileText, FolderKanban, Loader2Icon, PencilIcon, Plus, Trash2Icon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -183,7 +183,7 @@ export default function DomainsPage() {
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Domains</h1>
+          <h1 className="font-heading text-3xl tracking-tight">Domains</h1>
           <p className="text-sm text-muted-foreground">
             Manage knowledge domains and their documents.
           </p>
@@ -263,22 +263,28 @@ export default function DomainsPage() {
               </TableRow>
             ) : sortedDomains.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={5} className="py-8 text-center text-muted-foreground">
-                  No domains yet. Create one to get started.
+                <TableCell colSpan={5} className="py-14 text-center">
+                  <div className="flex flex-col items-center gap-2 text-muted-foreground">
+                    <FolderKanban className="size-6 opacity-50" />
+                    <p className="text-sm">No domains yet. Create one to get started.</p>
+                  </div>
                 </TableCell>
               </TableRow>
             ) : (
               sortedDomains.map((domain) => (
-                <TableRow key={domain.id}>
+                <TableRow
+                  key={domain.id}
+                  className="border-l-2 border-l-transparent transition-colors hover:border-l-primary hover:bg-accent/30"
+                >
                   <TableCell className="font-medium">
                     <Link
                       href={`/domains/${domain.id}`}
-                      className="hover:underline"
+                      className="hover:text-primary hover:underline"
                     >
                       {domain.name}
                     </Link>
                   </TableCell>
-                  <TableCell className="text-muted-foreground">{domain.slug}</TableCell>
+                  <TableCell className="font-mono text-xs text-muted-foreground">{domain.slug}</TableCell>
                   <TableCell className="max-w-xs truncate text-muted-foreground">
                     {domain.description || "—"}
                   </TableCell>

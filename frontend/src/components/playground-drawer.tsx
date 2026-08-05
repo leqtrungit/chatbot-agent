@@ -2,7 +2,8 @@
 
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { toast } from "sonner";
-import { BrainIcon, ChevronDownIcon, Loader2Icon, RotateCcwIcon, SendIcon } from "lucide-react";
+import { ChevronDownIcon, Loader2Icon, RotateCcwIcon, SendIcon } from "lucide-react";
+import { ThinkingOrb, type OrbState } from "thinking-orbs";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -12,6 +13,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
 import {
   ApiError,
   getJob,
@@ -41,7 +49,74 @@ function newId() {
 
 const API_KEY_STORAGE_KEY = "playground_api_key";
 
-export default function PlaygroundPage() {
+function orbStateForStatus(status: string | null): OrbState {
+  switch (status) {
+    case "thinking":
+      return "shaping";
+    case "processing":
+      return "working";
+    case "queued":
+    default:
+      return "connecting";
+  }
+}
+
+function ThinkingBubble({
+  content,
+  collapsed,
+  onToggle,
+}: {
+  content: string;
+  collapsed: boolean;
+  onToggle: () => void;
+}) {
+  const contentRef = useRef<HTMLDivElement>(null);
+
+  // Keep the live ticker pinned to its latest line without animating —
+  // an animated/outer-container scroll here is what caused the jitter.
+  useEffect(() => {
+    if (collapsed) return;
+    const el = contentRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [content, collapsed]);
+
+  return (
+    <div className="flex justify-start">
+      <div className="max-w-[85%] rounded-2xl border border-primary/25 bg-primary/5 px-3 py-2 text-sm text-muted-foreground">
+        <button
+          type="button"
+          onClick={onToggle}
+          className="flex items-center gap-2 font-medium text-foreground"
+        >
+          <ThinkingOrb state="shaping" size={20} paused={collapsed} />
+          Thinking
+          <ChevronDownIcon
+            className={cn(
+              "size-3.5 transition-transform",
+              collapsed && "-rotate-90"
+            )}
+          />
+        </button>
+        {!collapsed ? (
+          <div
+            ref={contentRef}
+            className="mt-1.5 max-h-24 overflow-y-auto whitespace-pre-wrap italic [mask-image:linear-gradient(to_bottom,transparent,black_16px)]"
+          >
+            {content}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+export function PlaygroundDrawer({
+  open,
+  onOpenChange,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
   const [domains, setDomains] = useState<Domain[]>([]);
   const [domainId, setDomainId] = useState<string>("");
   const [sessionId, setSessionId] = useState<string>(newId());
@@ -66,11 +141,12 @@ export default function PlaygroundPage() {
   }
 
   useEffect(() => {
+    if (!open) return;
     async function load() {
       try {
         const data = await listDomains();
         setDomains(data);
-        if (data.length > 0) setDomainId(data[0].id);
+        setDomainId((current) => current || (data.length > 0 ? data[0].id : ""));
       } catch (err) {
         if (err instanceof ApiError && err.status !== 401) {
           toast.error("Failed to load domains", { description: err.message });
@@ -78,12 +154,12 @@ export default function PlaygroundPage() {
       }
     }
     load();
-  }, []);
+  }, [open]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({
       top: scrollRef.current.scrollHeight,
-      behavior: "smooth",
+      behavior: "auto",
     });
   }, [messages]);
 
@@ -271,66 +347,73 @@ export default function PlaygroundPage() {
   }
 
   const selectedDomain = domains.find((d) => d.id === domainId);
+  const lastMessage = messages[messages.length - 1];
+  // Once a thinking bubble or the assistant's own reply has started
+  // rendering, that bubble is already the live indicator — showing this
+  // pill at the same time doubles up the orb for no reason.
+  const showStatusPill =
+    sending &&
+    jobStatusText &&
+    (!lastMessage || lastMessage.role === "user" || lastMessage.role === "error");
 
   return (
-    <div className="flex flex-1 flex-col gap-4">
-      <div className="flex items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Playground</h1>
-          <p className="text-sm text-muted-foreground">
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent className="sm:max-w-xl">
+        <SheetHeader className="pr-8">
+          <div className="flex items-center justify-between gap-2">
+            <SheetTitle>Playground</SheetTitle>
+            <Button
+              variant="outline"
+              size="icon-sm"
+              aria-label="Reset conversation"
+              onClick={resetConversation}
+            >
+              <RotateCcwIcon />
+            </Button>
+          </div>
+          <SheetDescription>
             Send test messages to a domain and inspect the assistant&apos;s replies.
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <Input
-            className="w-48"
-            type="password"
-            placeholder="X-API-Key"
-            value={apiKey}
-            onChange={(e) => handleApiKeyChange(e.target.value)}
-            aria-label="API key"
-          />
-          <Select
-            value={domainId}
-            onValueChange={(value) => setDomainId(value as string)}
-          >
-            <SelectTrigger className="w-56">
-              <SelectValue placeholder="Select a domain">
-                {(value) =>
-                  domains.find((domain) => domain.id === value)?.name ?? ""
-                }
-              </SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              {domains.map((domain) => (
-                <SelectItem key={domain.id} value={domain.id}>
-                  {domain.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Button
-            variant="outline"
-            size="icon"
-            aria-label="Reset conversation"
-            onClick={resetConversation}
-          >
-            <RotateCcwIcon />
-          </Button>
-        </div>
-      </div>
-      {!apiKey.trim() ? (
-        <p className="text-sm text-muted-foreground">
-          Enter an API key above (create one on the API Keys page) to send
-          messages.
-        </p>
-      ) : null}
+          </SheetDescription>
+          <div className="flex items-center gap-2 pt-1">
+            <Input
+              className="flex-1"
+              type="password"
+              placeholder="X-API-Key"
+              value={apiKey}
+              onChange={(e) => handleApiKeyChange(e.target.value)}
+              aria-label="API key"
+            />
+            <Select
+              value={domainId}
+              onValueChange={(value) => setDomainId(value as string)}
+            >
+              <SelectTrigger className="w-40">
+                <SelectValue placeholder="Domain">
+                  {(value) =>
+                    domains.find((domain) => domain.id === value)?.name ?? ""
+                  }
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                {domains.map((domain) => (
+                  <SelectItem key={domain.id} value={domain.id}>
+                    {domain.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          {!apiKey.trim() ? (
+            <p className="text-xs text-muted-foreground">
+              Enter an API key above (create one on the API Keys page) to send
+              messages.
+            </p>
+          ) : null}
+        </SheetHeader>
 
-      <div className="flex flex-1 flex-col overflow-hidden rounded-xl border">
         <div
           ref={scrollRef}
-          className="flex flex-1 flex-col gap-3 overflow-y-auto p-4"
-          style={{ minHeight: 400, maxHeight: "60vh" }}
+          className="flex flex-1 flex-col gap-3 overflow-y-auto rounded-xl border p-3"
         >
           {messages.length === 0 ? (
             <p className="m-auto text-sm text-muted-foreground">
@@ -343,34 +426,17 @@ export default function PlaygroundPage() {
               if (msg.role === "thinking") {
                 const collapsed = collapsedThinking[msg.id] ?? false;
                 return (
-                  <div key={msg.id} className="flex justify-start">
-                    <div className="max-w-[75%] rounded-xl border border-dashed px-3 py-2 text-sm text-muted-foreground">
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setCollapsedThinking((prev) => ({
-                            ...prev,
-                            [msg.id]: !collapsed,
-                          }))
-                        }
-                        className="flex items-center gap-1.5 font-medium"
-                      >
-                        <BrainIcon className="size-3.5" />
-                        Thinking
-                        <ChevronDownIcon
-                          className={cn(
-                            "size-3.5 transition-transform",
-                            collapsed && "-rotate-90"
-                          )}
-                        />
-                      </button>
-                      {!collapsed ? (
-                        <div className="mt-1.5 whitespace-pre-wrap italic">
-                          {msg.content}
-                        </div>
-                      ) : null}
-                    </div>
-                  </div>
+                  <ThinkingBubble
+                    key={msg.id}
+                    content={msg.content}
+                    collapsed={collapsed}
+                    onToggle={() =>
+                      setCollapsedThinking((prev) => ({
+                        ...prev,
+                        [msg.id]: !collapsed,
+                      }))
+                    }
+                  />
                 );
               }
 
@@ -384,10 +450,11 @@ export default function PlaygroundPage() {
                 >
                   <div
                     className={cn(
-                      "max-w-[75%] rounded-xl px-3 py-2 text-sm whitespace-pre-wrap",
+                      "max-w-[85%] rounded-2xl px-3.5 py-2 text-sm whitespace-pre-wrap",
                       msg.role === "user" &&
                         "bg-primary text-primary-foreground",
-                      msg.role === "assistant" && "bg-muted text-foreground",
+                      msg.role === "assistant" &&
+                        "border border-border/70 bg-card text-foreground",
                       msg.role === "error" &&
                         "bg-destructive/10 text-destructive"
                     )}
@@ -398,19 +465,17 @@ export default function PlaygroundPage() {
               );
             })
           )}
-          {sending && jobStatusText ? (
+          {showStatusPill ? (
             <div className="flex justify-start">
-              <div className="flex items-center gap-2 rounded-xl bg-muted px-3 py-2 text-sm text-muted-foreground">
-                <Loader2Icon className="size-3.5 animate-spin" />
+              <div className="inline-flex h-9 items-center gap-2 rounded-full border border-border/70 bg-card pl-2 pr-3.5 text-xs text-muted-foreground shadow-sm">
+                <ThinkingOrb state={orbStateForStatus(jobStatusText)} size={20} />
                 {jobStatusText}
               </div>
             </div>
           ) : null}
         </div>
-        <form
-          onSubmit={handleSend}
-          className="flex items-center gap-2 border-t bg-muted/30 p-3"
-        >
+
+        <form onSubmit={handleSend} className="flex items-center gap-2">
           <Input
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -427,15 +492,11 @@ export default function PlaygroundPage() {
             type="submit"
             disabled={!domainId || !apiKey.trim() || !input.trim() || sending}
           >
-            {sending ? (
-              <Loader2Icon className="animate-spin" />
-            ) : (
-              <SendIcon />
-            )}
+            {sending ? <Loader2Icon className="animate-spin" /> : <SendIcon />}
             Send
           </Button>
         </form>
-      </div>
-    </div>
+      </SheetContent>
+    </Sheet>
   );
 }

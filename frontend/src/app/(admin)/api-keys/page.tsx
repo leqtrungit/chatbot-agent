@@ -157,7 +157,7 @@ export default function ApiKeysPage() {
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">API Keys</h1>
+          <h1 className="font-heading text-3xl tracking-tight">API Keys</h1>
           <p className="text-sm text-muted-foreground">
             Manage the integration apps (mobile app, website widget, bot...)
             allowed to call the chat webhook.
@@ -174,7 +174,7 @@ export default function ApiKeysPage() {
                     Copy this key now — it will not be shown again.
                   </DialogDescription>
                 </DialogHeader>
-                <div className="flex items-center gap-2 rounded-md border bg-muted px-3 py-2 font-mono text-sm">
+                <div className="flex items-center gap-2 rounded-md border border-primary/40 bg-primary/5 px-3 py-2 font-mono text-sm">
                   <span className="flex-1 truncate">{createdKey}</span>
                   <Button
                     type="button"
@@ -271,15 +271,23 @@ export default function ApiKeysPage() {
               </TableRow>
             ) : sortedKeys.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={6} className="py-8 text-center text-muted-foreground">
-                  No API keys yet. Create one to allow an app to call the webhook.
+                <TableCell colSpan={6} className="py-14 text-center">
+                  <div className="flex flex-col items-center gap-2 text-muted-foreground">
+                    <KeyRoundIcon className="size-6 opacity-50" />
+                    <p className="text-sm">
+                      No API keys yet. Create one to allow an app to call the webhook.
+                    </p>
+                  </div>
                 </TableCell>
               </TableRow>
             ) : (
               sortedKeys.map((apiKey) => {
                 const revoked = !!apiKey.revoked_at;
                 return (
-                  <TableRow key={apiKey.id}>
+                  <TableRow
+                    key={apiKey.id}
+                    className="border-l-2 border-l-transparent transition-colors hover:border-l-primary hover:bg-accent/30"
+                  >
                     <TableCell className="font-medium">
                       <span className="flex items-center gap-1.5">
                         <KeyRoundIcon className="size-3.5 text-muted-foreground" />

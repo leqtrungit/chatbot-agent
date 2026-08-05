@@ -201,7 +201,7 @@ export default function DomainDocumentsPage({
           <div className="h-8 w-48 animate-pulse rounded bg-muted" />
         ) : (
           <>
-            <h1 className="text-2xl font-semibold tracking-tight">
+            <h1 className="font-heading text-3xl tracking-tight">
               {domain?.name ?? "Domain"}
             </h1>
             {domain?.description ? (
@@ -272,20 +272,26 @@ export default function DomainDocumentsPage({
               </TableRow>
             ) : documents.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={5} className="py-8 text-center text-muted-foreground">
-                  No documents uploaded yet.
+                <TableCell colSpan={5} className="py-14 text-center">
+                  <div className="flex flex-col items-center gap-2 text-muted-foreground">
+                    <FileIcon className="size-6 opacity-50" />
+                    <p className="text-sm">No documents uploaded yet.</p>
+                  </div>
                 </TableCell>
               </TableRow>
             ) : (
               documents.map((doc) => (
-                <TableRow key={doc.id}>
+                <TableRow
+                  key={doc.id}
+                  className="border-l-2 border-l-transparent transition-colors hover:border-l-primary hover:bg-accent/30"
+                >
                   <TableCell className="font-medium">
                     <div className="flex items-center gap-2">
                       <FileIcon className="size-4 text-muted-foreground" />
                       {doc.filename}
                     </div>
                   </TableCell>
-                  <TableCell className="text-muted-foreground">
+                  <TableCell className="font-mono text-xs text-muted-foreground">
                     {doc.mime_type}
                   </TableCell>
                   <TableCell>
