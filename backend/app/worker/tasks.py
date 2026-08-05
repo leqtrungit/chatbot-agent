@@ -156,7 +156,9 @@ async def process_chat_job_stream(
     try:
         response = None
         async for event in agent.run_stream(text, history=history):
-            if event.type == "delta":
+            if event.type == "thinking":
+                await redis.publish(channel, json.dumps({"type": "thinking", "delta": event.thinking}))
+            elif event.type == "delta":
                 await redis.publish(channel, json.dumps({"type": "token", "delta": event.delta}))
             elif event.type == "final":
                 response = event.response

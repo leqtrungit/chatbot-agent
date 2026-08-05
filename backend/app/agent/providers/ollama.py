@@ -162,6 +162,11 @@ class OllamaProvider:
                 data = json.loads(line)
                 message = data.get("message", {})
 
+                # Accumulate thinking and yield deltas (reasoning models only)
+                chunk_thinking = message.get("thinking") or ""
+                if chunk_thinking:
+                    yield StreamChunk(thinking=chunk_thinking)
+
                 # Accumulate content and yield deltas
                 chunk_content = message.get("content") or ""
                 if chunk_content:

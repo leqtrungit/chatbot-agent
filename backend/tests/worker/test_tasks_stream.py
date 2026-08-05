@@ -182,6 +182,46 @@ async def test_process_chat_job_stream_publishes_tokens_then_done(monkeypatch):
     }
 
 
+async def test_process_chat_job_stream_publishes_thinking_before_tokens(monkeypatch):
+    """Thinking deltas are published as their own event type, ahead of content tokens."""
+    domain_id = uuid.uuid4()
+    monkeypatch.setattr(tasks, "PgVectorKnowledgeSearcher", _FakeSearcher)
+    monkeypatch.setattr(tasks, "get_domain", _make_fake_get_domain(domain_id))
+    monkeypatch.setattr(tasks, "load_history", _make_fake_load_history([]))
+    monkeypatch.setattr(tasks, "append_turn", _make_fake_append_turn())
+
+    fake_redis = _FakeRedis()
+    ctx = await _make_ctx(redis=fake_redis)
+
+    final_response = AgentResponse(
+        content="Answer", messages=[], iterations=1, stopped_on="final_answer"
+    )
+    stream_events = [
+        AgentStreamEvent(type="thinking", thinking="Let me "),
+        AgentStreamEvent(type="thinking", thinking="think..."),
+        AgentStreamEvent(type="delta", delta="Answer"),
+        AgentStreamEvent(type="final", response=final_response),
+    ]
+    fake_agent = _FakeAgent(stream_chunks=stream_events)
+    monkeypatch.setattr(tasks, "build_domain_agent", lambda *args, **kwargs: fake_agent)
+
+    await tasks.process_chat_job_stream(
+        ctx,
+        domain_id=str(domain_id),
+        session_id="sess-think",
+        text="Explain something",
+        metadata={},
+        platform="generic",
+    )
+
+    channel = "chat:job:test-job-1"
+    assert len(fake_redis.published) == 4
+    assert fake_redis.published[0] == (channel, {"type": "thinking", "delta": "Let me "})
+    assert fake_redis.published[1] == (channel, {"type": "thinking", "delta": "think..."})
+    assert fake_redis.published[2] == (channel, {"type": "token", "delta": "Answer"})
+    assert fake_redis.published[3][1]["type"] == "done"
+
+
 async def test_process_chat_job_stream_tool_call_then_final_publishes_only_final_iteration_tokens(
     monkeypatch
 ):

@@ -13,7 +13,7 @@ import type {
 } from "@/lib/types";
 
 export interface ChatStreamEvent {
-  type: "queued" | "token" | "done" | "error";
+  type: "queued" | "thinking" | "token" | "done" | "error";
   job_id?: string;
   delta?: string;
   reply?: string;

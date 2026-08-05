@@ -121,6 +121,8 @@ class Agent:
                 messages, model=self.model, tools=tool_definitions, params=self.params,
             ):
                 if not chunk.done:
+                    if chunk.thinking:
+                        yield AgentStreamEvent(type="thinking", thinking=chunk.thinking)
                     if chunk.delta:
                         yield AgentStreamEvent(type="delta", delta=chunk.delta)
                     continue

@@ -200,6 +200,12 @@ class OpenAICompatProvider:
                 # Track whether we yielded anything for this SSE line
                 has_content = False
 
+                # Accumulate reasoning/thinking content (vLLM/DeepSeek-style field)
+                reasoning_delta = delta.get("reasoning_content") or delta.get("reasoning")
+                if reasoning_delta:
+                    has_content = True
+                    yield StreamChunk(thinking=reasoning_delta, done=False)
+
                 # Accumulate text content
                 if delta.get("content"):
                     content += delta["content"]

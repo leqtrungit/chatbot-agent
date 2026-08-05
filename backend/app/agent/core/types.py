@@ -67,7 +67,8 @@ class LLMResponse(BaseModel):
 
 
 class StreamChunk(BaseModel):
-    delta: str = ""              # NEW text since the last chunk, never cumulative
+    delta: str = ""               # NEW text since the last chunk, never cumulative
+    thinking: str = ""            # NEW reasoning/thinking text since the last chunk, never cumulative
     done: bool = False
     response: LLMResponse | None = None   # set iff done=True; full accumulated response
 
@@ -82,6 +83,7 @@ class AgentResponse(BaseModel):
 
 
 class AgentStreamEvent(BaseModel):
-    type: Literal["delta", "final"]
-    delta: str = ""               # set iff type=="delta"
+    type: Literal["delta", "thinking", "final"]
+    delta: str = ""                # set iff type=="delta"
+    thinking: str = ""             # set iff type=="thinking"
     response: AgentResponse | None = None   # set iff type=="final"

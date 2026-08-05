@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { toast } from "sonner";
-import { Loader2Icon, RotateCcwIcon, SendIcon } from "lucide-react";
+import { BrainIcon, ChevronDownIcon, Loader2Icon, RotateCcwIcon, SendIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -25,7 +25,7 @@ import { cn } from "@/lib/utils";
 
 interface ChatMessage {
   id: string;
-  role: "user" | "assistant" | "error";
+  role: "user" | "assistant" | "thinking" | "error";
   content: string;
   jobStatus?: JobStatus;
 }
@@ -50,6 +50,9 @@ export default function PlaygroundPage() {
   const [sending, setSending] = useState(false);
   const [jobStatusText, setJobStatusText] = useState<string | null>(null);
   const [apiKey, setApiKey] = useState<string>("");
+  const [collapsedThinking, setCollapsedThinking] = useState<
+    Record<string, boolean>
+  >({});
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -174,6 +177,7 @@ export default function PlaygroundPage() {
     setJobStatusText("queued");
 
     let assistantMessageCreated = false;
+    let thinkingMessageId: string | null = null;
 
     try {
       await streamChatMessage(
@@ -186,7 +190,29 @@ export default function PlaygroundPage() {
         (streamEvent: ChatStreamEvent) => {
           if (streamEvent.type === "queued") {
             setJobStatusText("processing");
+          } else if (streamEvent.type === "thinking") {
+            const delta = streamEvent.delta || "";
+            setJobStatusText("thinking");
+            if (!thinkingMessageId) {
+              const id = newId();
+              thinkingMessageId = id;
+              setMessages((prev) => [
+                ...prev,
+                { id, role: "thinking", content: delta },
+              ]);
+            } else {
+              const id = thinkingMessageId;
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === id ? { ...m, content: m.content + delta } : m
+                )
+              );
+            }
           } else if (streamEvent.type === "token") {
+            if (thinkingMessageId) {
+              const id = thinkingMessageId;
+              setCollapsedThinking((prev) => ({ ...prev, [id]: true }));
+            }
             const delta = streamEvent.delta || "";
             if (!assistantMessageCreated) {
               // Create assistant message on first token
@@ -313,28 +339,64 @@ export default function PlaygroundPage() {
                 : "Select a domain to start chatting."}
             </p>
           ) : (
-            messages.map((msg) => (
-              <div
-                key={msg.id}
-                className={cn(
-                  "flex",
-                  msg.role === "user" ? "justify-end" : "justify-start"
-                )}
-              >
+            messages.map((msg) => {
+              if (msg.role === "thinking") {
+                const collapsed = collapsedThinking[msg.id] ?? false;
+                return (
+                  <div key={msg.id} className="flex justify-start">
+                    <div className="max-w-[75%] rounded-xl border border-dashed px-3 py-2 text-sm text-muted-foreground">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setCollapsedThinking((prev) => ({
+                            ...prev,
+                            [msg.id]: !collapsed,
+                          }))
+                        }
+                        className="flex items-center gap-1.5 font-medium"
+                      >
+                        <BrainIcon className="size-3.5" />
+                        Thinking
+                        <ChevronDownIcon
+                          className={cn(
+                            "size-3.5 transition-transform",
+                            collapsed && "-rotate-90"
+                          )}
+                        />
+                      </button>
+                      {!collapsed ? (
+                        <div className="mt-1.5 whitespace-pre-wrap italic">
+                          {msg.content}
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                );
+              }
+
+              return (
                 <div
+                  key={msg.id}
                   className={cn(
-                    "max-w-[75%] rounded-xl px-3 py-2 text-sm whitespace-pre-wrap",
-                    msg.role === "user" &&
-                      "bg-primary text-primary-foreground",
-                    msg.role === "assistant" && "bg-muted text-foreground",
-                    msg.role === "error" &&
-                      "bg-destructive/10 text-destructive"
+                    "flex",
+                    msg.role === "user" ? "justify-end" : "justify-start"
                   )}
                 >
-                  {msg.content}
+                  <div
+                    className={cn(
+                      "max-w-[75%] rounded-xl px-3 py-2 text-sm whitespace-pre-wrap",
+                      msg.role === "user" &&
+                        "bg-primary text-primary-foreground",
+                      msg.role === "assistant" && "bg-muted text-foreground",
+                      msg.role === "error" &&
+                        "bg-destructive/10 text-destructive"
+                    )}
+                  >
+                    {msg.content}
+                  </div>
                 </div>
-              </div>
-            ))
+              );
+            })
           )}
           {sending && jobStatusText ? (
             <div className="flex justify-start">

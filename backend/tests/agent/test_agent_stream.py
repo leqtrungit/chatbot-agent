@@ -48,6 +48,24 @@ async def test_single_shot_streamed_answer(mock_llm):
     assert events[2].response.stopped_on == "final_answer"
 
 
+async def test_stream_thinking_deltas_emitted_before_content_deltas(mock_llm):
+    mock_llm.queue_stream([
+        StreamChunk(thinking="Let me "),
+        StreamChunk(thinking="think..."),
+        StreamChunk(delta="Answer"),
+        StreamChunk(done=True, response=LLMResponse(content="Answer", finish_reason="stop")),
+    ])
+    agent = make_agent(mock_llm)
+
+    events = [e async for e in agent.run_stream("hi")]
+
+    assert events[0] == AgentStreamEvent(type="thinking", thinking="Let me ")
+    assert events[1] == AgentStreamEvent(type="thinking", thinking="think...")
+    assert events[2] == AgentStreamEvent(type="delta", delta="Answer")
+    assert events[3].type == "final"
+    assert events[3].response.content == "Answer"
+
+
 async def test_stream_tool_call_then_final_answer(mock_llm, recording_tool):
     # First iteration: tool call response (no deltas during tool calls)
     mock_llm.queue_stream([

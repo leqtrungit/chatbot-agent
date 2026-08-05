@@ -204,6 +204,28 @@ async def test_chat_stream_yields_incremental_deltas_then_final():
     assert chunks[2].response.usage == {"prompt_eval_count": 5, "eval_count": 3}
 
 
+async def test_chat_stream_yields_thinking_deltas_separately_from_content():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=(
+                b'{"message":{"thinking":"Let me "},"done":false}\n'
+                b'{"message":{"thinking":"think..."},"done":false}\n'
+                b'{"message":{"content":"Answer"},"done":false}\n'
+                b'{"message":{"content":""},"done":true,"done_reason":"stop"}\n'
+            ),
+        )
+
+    provider = make_provider(handler)
+    chunks = [c async for c in provider.chat_stream([Message(role=Role.USER, content="hi")], model="llama3")]
+
+    assert chunks[0] == StreamChunk(thinking="Let me ")
+    assert chunks[1] == StreamChunk(thinking="think...")
+    assert chunks[2] == StreamChunk(delta="Answer")
+    assert chunks[3].done is True
+    assert chunks[3].response.content == "Answer"
+
+
 async def test_chat_stream_captures_tool_calls_on_final_line():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(

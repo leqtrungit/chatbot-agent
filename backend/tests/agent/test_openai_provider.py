@@ -339,6 +339,36 @@ async def test_chat_stream_yields_incremental_deltas_then_final():
     assert chunks[2].response.tool_calls == []
 
 
+async def test_chat_stream_yields_reasoning_content_as_thinking_deltas():
+    """Verify vLLM/DeepSeek-style reasoning_content deltas surface as thinking, not content."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=(
+                b'data: {"choices":[{"index":0,"delta":{"reasoning_content":"Let me "},"finish_reason":null}]}\n\n'
+                b'data: {"choices":[{"index":0,"delta":{"reasoning_content":"think..."},"finish_reason":null}]}\n\n'
+                b'data: {"choices":[{"index":0,"delta":{"content":"Answer"},"finish_reason":"stop"}]}\n\n'
+                b'data: [DONE]\n\n'
+            ),
+        )
+
+    provider = make_provider(handler)
+    chunks = [
+        c async for c in provider.chat_stream(
+            [Message(role=Role.USER, content="hi")], model="gpt-4o-mini"
+        )
+    ]
+
+    assert chunks[0].thinking == "Let me "
+    assert chunks[0].delta == ""
+    assert chunks[1].thinking == "think..."
+    assert chunks[2].delta == "Answer"
+    assert chunks[2].thinking == ""
+    assert chunks[3].done is True
+    assert chunks[3].response.content == "Answer"
+
+
 async def test_chat_stream_accumulates_single_tool_call_across_deltas():
     """Verify that a single tool call's arguments are accumulated across deltas."""
 
