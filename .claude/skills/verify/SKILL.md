@@ -29,26 +29,35 @@ Build failure = type error; fix before done.
 
 ```bash
 docker compose build worker && docker compose up -d worker
-docker logs chatbot-worker --tail 5   # expect "Starting worker for 2 functions: ingest_document, process_chat_job"
+docker logs chatbot-worker --tail 5   # expect "Starting worker for 3 functions: ingest_document, process_chat_job, process_chat_job_stream"
 ```
 
 ## 4. Live smoke test (API/webhook/worker flow changes)
 
-Start the API (`cd backend && uv run uvicorn app.main:app --port 8000 &`), then:
+Start the API on a free port so you don't touch whatever the user may already have running on :8000 (`cd backend && uv run uvicorn app.main:app --port 8001 &`), then:
 
 ```bash
-curl -s http://localhost:8000/health                                   # {"status":"ok"}
-curl -s -u admin:admin -X POST http://localhost:8000/api/domains \
-  -H 'Content-Type: application/json' -d '{"name":"Smoke Test"}'       # 200, note the id
-curl -s -X POST http://localhost:8000/api/webhooks/generic \
+BASE=http://localhost:8001
+curl -s $BASE/health                                                    # {"status":"ok"}
+DOMAIN=$(curl -s -u admin:admin -X POST $BASE/api/domains \
+  -H 'Content-Type: application/json' -d '{"name":"Smoke Test"}')       # 201, note the id
+DOMAIN_ID=$(echo "$DOMAIN" | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
+AGENT=$(curl -s -u admin:admin -X POST $BASE/api/agents \
   -H 'Content-Type: application/json' \
-  -d '{"domain_id":"smoke-test","message":"hello"}'                    # 202 {"job_id": ...}
-curl -s http://localhost:8000/api/jobs/<job_id>                        # poll status
+  -d "{\"name\":\"Smoke Agent\",\"provider\":\"ollama\",\"model_name\":\"qwen2.5\",\"domain_ids\":[\"$DOMAIN_ID\"]}")  # 201, note the id
+AGENT_ID=$(echo "$AGENT" | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
+APIKEY=$(curl -s -u admin:admin -X POST $BASE/api/api-keys \
+  -H 'Content-Type: application/json' -d '{"name":"Smoke App"}')        # 201, note the raw "key"
+KEY=$(echo "$APIKEY" | python3 -c "import sys,json;print(json.load(sys.stdin)['key'])")
+curl -s -X POST $BASE/api/webhooks/generic \
+  -H "X-API-Key: $KEY" -H 'Content-Type: application/json' \
+  -d "{\"agent_id\":\"$AGENT_ID\",\"message\":\"hello\"}"               # 202 {"job_id": ...} — no domain_id, agent resolves its own domains
+curl -s -H "X-API-Key: $KEY" $BASE/api/jobs/<job_id>                    # poll status
 ```
 
 - With Ollama installed on the host (`ollama pull qwen2.5 nomic-embed-text`): expect `complete` with a reply.
 - Without Ollama: `failed` with a connection error is the EXPECTED outcome and still proves webhook→queue→worker→polling works. Say so honestly in the report.
-- Clean up: DELETE the smoke domain (`curl -u admin:admin -X DELETE .../api/domains/<id>`), kill the uvicorn you started.
+- Clean up: DELETE the smoke agent and domain (`curl -u admin:admin -X DELETE $BASE/api/agents/<id>` / `.../api/domains/<id>`), revoke the smoke API key, kill the uvicorn you started.
 
 ## 5. Migrations (schema changes)
 
