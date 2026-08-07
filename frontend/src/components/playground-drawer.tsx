@@ -23,12 +23,12 @@ import {
 import {
   ApiError,
   getJob,
-  listDomains,
+  listAgents,
   sendChatMessage, // eslint-disable-line @typescript-eslint/no-unused-vars
   streamChatMessage,
   type ChatStreamEvent,
 } from "@/lib/api";
-import type { Domain, JobStatus } from "@/lib/types";
+import type { Agent, JobStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 interface ChatMessage {
@@ -117,8 +117,8 @@ export function PlaygroundDrawer({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
-  const [domains, setDomains] = useState<Domain[]>([]);
-  const [domainId, setDomainId] = useState<string>("");
+  const [agents, setAgents] = useState<Agent[]>([]);
+  const [agentId, setAgentId] = useState<string>("");
   const [sessionId, setSessionId] = useState<string>(newId());
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -144,12 +144,11 @@ export function PlaygroundDrawer({
     if (!open) return;
     async function load() {
       try {
-        const data = await listDomains();
-        setDomains(data);
-        setDomainId((current) => current || (data.length > 0 ? data[0].id : ""));
+        const agentsData = await listAgents();
+        setAgents(agentsData);
       } catch (err) {
         if (err instanceof ApiError && err.status !== 401) {
-          toast.error("Failed to load domains", { description: err.message });
+          toast.error("Failed to load agents", { description: err.message });
         }
       }
     }
@@ -242,7 +241,7 @@ export function PlaygroundDrawer({
   async function handleSend(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const trimmed = input.trim();
-    if (!trimmed || !domainId || !apiKey.trim() || sending) return;
+    if (!trimmed || !agentId || !apiKey.trim() || sending) return;
 
     setMessages((prev) => [
       ...prev,
@@ -258,7 +257,7 @@ export function PlaygroundDrawer({
     try {
       await streamChatMessage(
         {
-          domain_id: domainId,
+          agent_id: agentId,
           session_id: sessionId,
           message: trimmed,
         },
@@ -346,7 +345,7 @@ export function PlaygroundDrawer({
     }
   }
 
-  const selectedDomain = domains.find((d) => d.id === domainId);
+  const selectedAgent = agents.find((a) => a.id === agentId);
   const lastMessage = messages[messages.length - 1];
   // Once a thinking bubble or the assistant's own reply has started
   // rendering, that bubble is already the live indicator — showing this
@@ -372,7 +371,7 @@ export function PlaygroundDrawer({
             </Button>
           </div>
           <SheetDescription>
-            Send test messages to a domain and inspect the assistant&apos;s replies.
+            Send test messages to an agent and inspect its replies.
           </SheetDescription>
           <div className="flex items-center gap-2 pt-1">
             <Input
@@ -384,20 +383,21 @@ export function PlaygroundDrawer({
               aria-label="API key"
             />
             <Select
-              value={domainId}
-              onValueChange={(value) => setDomainId(value as string)}
+              value={agentId}
+              onValueChange={(value) => setAgentId(value as string)}
+              disabled={agents.length === 0}
             >
-              <SelectTrigger className="w-40">
-                <SelectValue placeholder="Domain">
+              <SelectTrigger className="w-36">
+                <SelectValue placeholder="Agent">
                   {(value) =>
-                    domains.find((domain) => domain.id === value)?.name ?? ""
+                    agents.find((agent) => agent.id === value)?.name ?? ""
                   }
                 </SelectValue>
               </SelectTrigger>
               <SelectContent>
-                {domains.map((domain) => (
-                  <SelectItem key={domain.id} value={domain.id}>
-                    {domain.name}
+                {agents.map((agent) => (
+                  <SelectItem key={agent.id} value={agent.id}>
+                    {agent.name}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -408,6 +408,10 @@ export function PlaygroundDrawer({
               Enter an API key above (create one on the API Keys page) to send
               messages.
             </p>
+          ) : agents.length === 0 ? (
+            <p className="text-xs text-muted-foreground">
+              No agents yet. Create one on the Agents page.
+            </p>
           ) : null}
         </SheetHeader>
 
@@ -417,9 +421,9 @@ export function PlaygroundDrawer({
         >
           {messages.length === 0 ? (
             <p className="m-auto text-sm text-muted-foreground">
-              {selectedDomain
-                ? `No messages yet. Say hello to ${selectedDomain.name}.`
-                : "Select a domain to start chatting."}
+              {selectedAgent
+                ? `No messages yet. Say hello to ${selectedAgent.name}.`
+                : "Select an agent to start chatting."}
             </p>
           ) : (
             messages.map((msg) => {
@@ -482,15 +486,15 @@ export function PlaygroundDrawer({
             placeholder={
               !apiKey.trim()
                 ? "Enter an API key above first"
-                : domainId
-                  ? "Type a message..."
-                  : "Select a domain first"
+                : !agentId
+                  ? "Select an agent first"
+                  : "Type a message..."
             }
-            disabled={!domainId || !apiKey.trim() || sending}
+            disabled={!agentId || !apiKey.trim() || sending}
           />
           <Button
             type="submit"
-            disabled={!domainId || !apiKey.trim() || !input.trim() || sending}
+            disabled={!agentId || !apiKey.trim() || !input.trim() || sending}
           >
             {sending ? <Loader2Icon className="animate-spin" /> : <SendIcon />}
             Send

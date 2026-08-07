@@ -29,3 +29,20 @@ class DomainRead(BaseModel):
     description: str | None = None
     created_at: datetime
     updated_at: datetime
+    agent_ids: list[uuid.UUID] = []
+
+    @classmethod
+    def from_domain(cls, domain) -> "DomainRead":  # noqa: ANN001
+        return cls(
+            id=domain.id,
+            name=domain.name,
+            slug=domain.slug,
+            description=domain.description,
+            created_at=domain.created_at,
+            updated_at=domain.updated_at,
+            agent_ids=[a.id for a in domain.agents],
+        )
+
+
+class SetAgentIds(BaseModel):
+    agent_ids: list[uuid.UUID]

@@ -8,6 +8,8 @@ fixed-window rate limits per API key and per session.
 
 from __future__ import annotations
 
+import uuid
+
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,10 +18,10 @@ from app.channels.registry import ChannelNotRegisteredError, get_channel_registr
 from app.core.config import get_settings
 from app.core.db import get_session
 from app.core.ratelimit import check_rate_limit
+from app.modules.agent import service as agent_service
 from app.modules.apikey.deps import require_api_key
 from app.modules.apikey.models import ApiKey
 from app.modules.webhook import jobs as job_helpers
-from app.modules.webhook import service
 from app.modules.webhook.schemas import JobStatusRead, WebhookAck
 
 webhook_router = APIRouter(tags=["webhooks"])
@@ -76,14 +78,18 @@ async def receive_webhook(
         )
 
     try:
-        domain = await service.resolve_domain(session, message.domain_id)
-    except service.DomainNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Domain not found") from exc
+        agent_uuid = uuid.UUID(message.agent_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+    try:
+        agent = await agent_service.get_agent(session, agent_uuid)
+    except agent_service.AgentNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
 
     metadata = {**message.metadata, "app_id": str(api_key.id), "app_name": api_key.name}
 
     job_id = await job_helpers.enqueue_chat_job(
-        domain_id=str(domain.id),
+        agent_id=str(agent.id),
         session_id=message.session_id,
         text=message.text,
         metadata=metadata,

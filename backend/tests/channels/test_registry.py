@@ -19,7 +19,7 @@ class _FakeAdapter(ChannelAdapter):
     async def parse_incoming(
         self, payload: dict[str, Any], headers: dict[str, str]
     ) -> IncomingMessage:
-        return IncomingMessage(domain_id="d", session_id="s", text="t")
+        return IncomingMessage(agent_id="a", session_id="s", text="t")
 
 
 def test_register_and_get() -> None:

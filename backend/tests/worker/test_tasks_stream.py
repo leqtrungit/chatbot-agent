@@ -12,8 +12,8 @@ from sqlalchemy import select
 
 from app.agent.core.types import AgentResponse, AgentStreamEvent, LLMResponse, Message, Role, ToolCall
 from app.core.config import get_settings
+from app.modules.agent.models import Agent
 from app.modules.conversation.models import ChatMessage
-from app.modules.domain.models import Domain
 from app.worker import tasks
 
 
@@ -53,12 +53,12 @@ class _FakeRedis:
         return 1
 
 
-async def _seed_domain(session_maker) -> uuid.UUID:
+async def _seed_agent(session_maker) -> uuid.UUID:
     async with session_maker() as session:
-        domain = Domain(name="Chat Domain", slug="chat-domain", description="A test domain")
-        session.add(domain)
+        agent = Agent(name=f"Test Agent {uuid.uuid4()}", provider="ollama", model_name="qwen2.5")
+        session.add(agent)
         await session.commit()
-        return domain.id
+        return agent.id
 
 
 def _make_fake_session_maker():
@@ -103,34 +103,38 @@ class _FakeAgent:
             yield chunk
 
 
-def _make_fake_get_domain(domain_id: uuid.UUID):
-    """Create a fake get_domain that returns a Domain with the given ID."""
-    async def fake_get_domain(session, domain_uuid):
-        domain = Domain(name="Test Domain", slug="test-domain", description="")
-        domain.id = domain_uuid
-        return domain
-    return fake_get_domain
+def _make_fake_get_agent(agent_id: uuid.UUID):
+    """Create a fake get_agent that returns a placeholder Agent row.
+
+    ``build_agent`` is always monkeypatched separately in this file,
+    so this stub's field values are never actually read.
+    """
+    async def fake_get_agent(session, agent_uuid):
+        agent = Agent(name="Test Agent", provider="ollama", model_name="qwen2.5")
+        agent.id = agent_uuid
+        return agent
+    return fake_get_agent
 
 
 def _make_fake_load_history(history):
     """Create a fake load_history that returns the given history list."""
-    async def fake_load_history(session, domain_uuid, session_id, limit):
+    async def fake_load_history(session, agent_uuid, session_id, limit):
         return history
     return fake_load_history
 
 
 def _make_fake_append_turn():
     """Create a fake append_turn that does nothing (for tests that don't verify persistence)."""
-    async def fake_append_turn(session, domain_uuid, session_id, text, content):
+    async def fake_append_turn(session, agent_uuid, session_id, text, content):
         pass
     return fake_append_turn
 
 
 async def test_process_chat_job_stream_publishes_tokens_then_done(monkeypatch):
     """Fake agent yields 2 deltas then 1 final; verify Redis publishes in order."""
-    domain_id = uuid.uuid4()
+    agent_id = uuid.uuid4()
     monkeypatch.setattr(tasks, "PgVectorKnowledgeSearcher", _FakeSearcher)
-    monkeypatch.setattr(tasks, "get_domain", _make_fake_get_domain(domain_id))
+    monkeypatch.setattr(tasks, "get_agent", _make_fake_get_agent(agent_id))
     monkeypatch.setattr(tasks, "load_history", _make_fake_load_history([]))
     monkeypatch.setattr(tasks, "append_turn", _make_fake_append_turn())
 
@@ -146,11 +150,15 @@ async def test_process_chat_job_stream_publishes_tokens_then_done(monkeypatch):
         AgentStreamEvent(type="final", response=final_response),
     ]
     fake_agent = _FakeAgent(stream_chunks=stream_events)
-    monkeypatch.setattr(tasks, "build_domain_agent", lambda *args, **kwargs: fake_agent)
+
+    async def _fake_build_agent(*args, **kwargs):
+        return fake_agent
+
+    monkeypatch.setattr(tasks, "build_agent", _fake_build_agent)
 
     result = await tasks.process_chat_job_stream(
         ctx,
-        domain_id=str(domain_id),
+        agent_id=str(agent_id),
         session_id="sess-1",
         text="Say hello",
         metadata={},
@@ -184,9 +192,9 @@ async def test_process_chat_job_stream_publishes_tokens_then_done(monkeypatch):
 
 async def test_process_chat_job_stream_publishes_thinking_before_tokens(monkeypatch):
     """Thinking deltas are published as their own event type, ahead of content tokens."""
-    domain_id = uuid.uuid4()
+    agent_id = uuid.uuid4()
     monkeypatch.setattr(tasks, "PgVectorKnowledgeSearcher", _FakeSearcher)
-    monkeypatch.setattr(tasks, "get_domain", _make_fake_get_domain(domain_id))
+    monkeypatch.setattr(tasks, "get_agent", _make_fake_get_agent(agent_id))
     monkeypatch.setattr(tasks, "load_history", _make_fake_load_history([]))
     monkeypatch.setattr(tasks, "append_turn", _make_fake_append_turn())
 
@@ -203,11 +211,15 @@ async def test_process_chat_job_stream_publishes_thinking_before_tokens(monkeypa
         AgentStreamEvent(type="final", response=final_response),
     ]
     fake_agent = _FakeAgent(stream_chunks=stream_events)
-    monkeypatch.setattr(tasks, "build_domain_agent", lambda *args, **kwargs: fake_agent)
+
+    async def _fake_build_agent(*args, **kwargs):
+        return fake_agent
+
+    monkeypatch.setattr(tasks, "build_agent", _fake_build_agent)
 
     await tasks.process_chat_job_stream(
         ctx,
-        domain_id=str(domain_id),
+        agent_id=str(agent_id),
         session_id="sess-think",
         text="Explain something",
         metadata={},
@@ -227,9 +239,9 @@ async def test_process_chat_job_stream_tool_call_then_final_publishes_only_final
 ):
     """Simulate tool-call iteration: no deltas, then deltas, then final.
     Verify only the deltas from the final iteration are published."""
-    domain_id = uuid.uuid4()
+    agent_id = uuid.uuid4()
     monkeypatch.setattr(tasks, "PgVectorKnowledgeSearcher", _FakeSearcher)
-    monkeypatch.setattr(tasks, "get_domain", _make_fake_get_domain(domain_id))
+    monkeypatch.setattr(tasks, "get_agent", _make_fake_get_agent(agent_id))
     monkeypatch.setattr(tasks, "load_history", _make_fake_load_history([]))
     monkeypatch.setattr(tasks, "append_turn", _make_fake_append_turn())
 
@@ -249,11 +261,15 @@ async def test_process_chat_job_stream_tool_call_then_final_publishes_only_final
         AgentStreamEvent(type="final", response=final_response),
     ]
     fake_agent = _FakeAgent(stream_chunks=stream_events)
-    monkeypatch.setattr(tasks, "build_domain_agent", lambda *args, **kwargs: fake_agent)
+
+    async def _fake_build_agent(*args, **kwargs):
+        return fake_agent
+
+    monkeypatch.setattr(tasks, "build_agent", _fake_build_agent)
 
     await tasks.process_chat_job_stream(
         ctx,
-        domain_id=str(domain_id),
+        agent_id=str(agent_id),
         session_id="sess-tool",
         text="Search for something",
         metadata={},
@@ -275,7 +291,7 @@ async def test_process_chat_job_stream_persists_turn_and_reuses_history(session_
 
     This test requires a real database (session_maker fixture).
     """
-    domain_id = await _seed_domain(session_maker)
+    agent_id = await _seed_agent(session_maker)
     monkeypatch.setattr(tasks, "PgVectorKnowledgeSearcher", _FakeSearcher)
 
     fake_redis = _FakeRedis()
@@ -286,12 +302,16 @@ async def test_process_chat_job_stream_persists_turn_and_reuses_history(session_
             AgentStreamEvent(type="final", response=AgentResponse(content="First answer", messages=[], iterations=1, stopped_on="final_answer")),
         ]
     )
-    monkeypatch.setattr(tasks, "build_domain_agent", lambda *args, **kwargs: fake_agent)
+
+    async def _fake_build_agent_first(*args, **kwargs):
+        return fake_agent
+
+    monkeypatch.setattr(tasks, "build_agent", _fake_build_agent_first)
 
     # First call
     await tasks.process_chat_job_stream(
         ctx,
-        domain_id=str(domain_id),
+        agent_id=str(agent_id),
         session_id="sess-hist",
         text="First question",
         metadata={},
@@ -304,12 +324,16 @@ async def test_process_chat_job_stream_persists_turn_and_reuses_history(session_
             AgentStreamEvent(type="final", response=AgentResponse(content="Second answer", messages=[], iterations=1, stopped_on="final_answer")),
         ]
     )
-    monkeypatch.setattr(tasks, "build_domain_agent", lambda *args, **kwargs: fake_agent)
+
+    async def _fake_build_agent_second(*args, **kwargs):
+        return fake_agent
+
+    monkeypatch.setattr(tasks, "build_agent", _fake_build_agent_second)
 
     # Second call with same session
     await tasks.process_chat_job_stream(
         ctx,
-        domain_id=str(domain_id),
+        agent_id=str(agent_id),
         session_id="sess-hist",
         text="Second question",
         metadata={},
@@ -320,7 +344,7 @@ async def test_process_chat_job_stream_persists_turn_and_reuses_history(session_
     async with session_maker() as session:
         result = await session.execute(
             select(ChatMessage)
-            .where(ChatMessage.domain_id == domain_id, ChatMessage.session_id == "sess-hist")
+            .where(ChatMessage.agent_id == agent_id, ChatMessage.session_id == "sess-hist")
             .order_by(ChatMessage.created_at, ChatMessage.id)
         )
         rows = list(result.scalars().all())
@@ -342,9 +366,9 @@ async def test_process_chat_job_stream_publishes_error_and_reraises(monkeypatch)
     - the error message is published to Redis
     - the exception is re-raised so arq records job failure
     """
-    domain_id = uuid.uuid4()
+    agent_id = uuid.uuid4()
     monkeypatch.setattr(tasks, "PgVectorKnowledgeSearcher", _FakeSearcher)
-    monkeypatch.setattr(tasks, "get_domain", _make_fake_get_domain(domain_id))
+    monkeypatch.setattr(tasks, "get_agent", _make_fake_get_agent(agent_id))
     monkeypatch.setattr(tasks, "load_history", _make_fake_load_history([]))
 
     fake_redis = _FakeRedis()
@@ -355,12 +379,15 @@ async def test_process_chat_job_stream_publishes_error_and_reraises(monkeypatch)
             yield AgentStreamEvent(type="delta", delta="x")
             raise RuntimeError("boom")
 
-    monkeypatch.setattr(tasks, "build_domain_agent", lambda *args, **kwargs: _StreamingExplodingAgent())
+    async def _fake_build_agent(*args, **kwargs):
+        return _StreamingExplodingAgent()
+
+    monkeypatch.setattr(tasks, "build_agent", _fake_build_agent)
 
     with pytest.raises(RuntimeError, match="boom"):
         await tasks.process_chat_job_stream(
             ctx,
-            domain_id=str(domain_id),
+            agent_id=str(agent_id),
             session_id="sess-err",
             text="Will fail",
             metadata={},

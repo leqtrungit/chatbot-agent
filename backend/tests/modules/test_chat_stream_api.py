@@ -20,6 +20,16 @@ async def _create_domain(client, admin_auth_header, name="Support"):
     return resp.json()
 
 
+async def _create_agent(client, admin_auth_header, domain_id, *, name="Test Agent"):
+    resp = await client.post(
+        "/api/agents",
+        json={"name": name, "provider": "ollama", "model_name": "qwen2.5", "domain_ids": [domain_id]},
+        headers=admin_auth_header,
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
 async def _create_api_key(client, admin_auth_header, *, name="Test App", rate_limit_per_minute=None):
     payload: dict = {"name": name}
     if rate_limit_per_minute is not None:
@@ -108,7 +118,7 @@ def _patch_enqueue(monkeypatch, fake_redis: FakeRedis):
     async def _fake_enqueue(
         *,
         job_id: str,
-        domain_id: str,
+        agent_id: str,
         session_id: str,
         text: str,
         metadata: dict[str, Any],
@@ -116,7 +126,7 @@ def _patch_enqueue(monkeypatch, fake_redis: FakeRedis):
     ) -> None:
         call = {
             "job_id": job_id,
-            "domain_id": domain_id,
+            "agent_id": agent_id,
             "session_id": session_id,
             "text": text,
             "metadata": metadata,
@@ -132,26 +142,23 @@ def _patch_enqueue(monkeypatch, fake_redis: FakeRedis):
 
 
 async def test_missing_api_key_returns_401(client, admin_auth_header):
-    domain = await _create_domain(client, admin_auth_header)
     resp = await client.post(
         "/api/chat/stream",
-        json={"domain_id": domain["id"], "message": "hi"},
+        json={"agent_id": "a", "message": "hi"},
     )
     assert resp.status_code == 401
 
 
 async def test_invalid_api_key_returns_401(client, admin_auth_header):
-    domain = await _create_domain(client, admin_auth_header)
     resp = await client.post(
         "/api/chat/stream",
-        json={"domain_id": domain["id"], "message": "hi"},
+        json={"agent_id": "a", "message": "hi"},
         headers={"X-API-Key": "cba_not-a-real-key"},
     )
     assert resp.status_code == 401
 
 
 async def test_revoked_api_key_returns_401(client, admin_auth_header):
-    domain = await _create_domain(client, admin_auth_header)
     key = await _create_api_key(client, admin_auth_header)
     revoke_resp = await client.post(
         f"/api/api-keys/{key['id']}/revoke", headers=admin_auth_header
@@ -160,22 +167,25 @@ async def test_revoked_api_key_returns_401(client, admin_auth_header):
 
     resp = await client.post(
         "/api/chat/stream",
-        json={"domain_id": domain["id"], "message": "hi"},
+        json={"agent_id": "a", "message": "hi"},
         headers={"X-API-Key": key["key"]},
     )
     assert resp.status_code == 401
 
 
-# ---- Domain resolution ----
+# ---- Agent resolution ----
 
 
-async def test_unknown_domain_returns_404(client, admin_auth_header, api_key_header, monkeypatch):
+async def test_unknown_agent_returns_404(client, admin_auth_header, api_key_header, monkeypatch):
     _patch_fake_redis(monkeypatch)
     _patch_enqueue(monkeypatch, FakeRedis())
 
     resp = await client.post(
         "/api/chat/stream",
-        json={"domain_id": "00000000-0000-0000-0000-000000000000", "message": "hi"},
+        json={
+            "agent_id": "00000000-0000-0000-0000-000000000000",
+            "message": "hi",
+        },
         headers=api_key_header,
     )
     assert resp.status_code == 404
@@ -185,13 +195,12 @@ async def test_unknown_domain_returns_404(client, admin_auth_header, api_key_hea
 
 
 async def test_invalid_payload_returns_422(client, admin_auth_header, api_key_header, monkeypatch):
-    domain = await _create_domain(client, admin_auth_header)
     _patch_fake_redis(monkeypatch)
     _patch_enqueue(monkeypatch, FakeRedis())
 
     resp = await client.post(
         "/api/chat/stream",
-        json={"domain_id": domain["id"]},  # missing "message"
+        json={"agent_id": "a"},  # missing "message"
         headers=api_key_header,
     )
     assert resp.status_code == 422
@@ -202,6 +211,7 @@ async def test_invalid_payload_returns_422(client, admin_auth_header, api_key_he
 
 async def test_key_rate_limit_exceeded_returns_429(client, admin_auth_header, monkeypatch):
     domain = await _create_domain(client, admin_auth_header)
+    agent = await _create_agent(client, admin_auth_header, domain["id"])
     key = await _create_api_key(client, admin_auth_header, rate_limit_per_minute=1)
     headers = {"X-API-Key": key["key"]}
 
@@ -218,7 +228,7 @@ async def test_key_rate_limit_exceeded_returns_429(client, admin_auth_header, mo
 
     resp1 = await client.post(
         "/api/chat/stream",
-        json={"domain_id": domain["id"], "session_id": "s1", "message": "hi"},
+        json={"agent_id": agent["id"], "session_id": "s1", "message": "hi"},
         headers=headers,
     )
     assert resp1.status_code == 200  # SSE endpoints return 200
@@ -228,7 +238,7 @@ async def test_key_rate_limit_exceeded_returns_429(client, admin_auth_header, mo
 
     resp2 = await client.post(
         "/api/chat/stream",
-        json={"domain_id": domain["id"], "session_id": "s2", "message": "hi again"},
+        json={"agent_id": agent["id"], "session_id": "s2", "message": "hi again"},
         headers=headers,
     )
     assert resp2.status_code == 429
@@ -239,6 +249,7 @@ async def test_session_rate_limit_exceeded_returns_429(
     client, admin_auth_header, api_key_header, monkeypatch
 ):
     domain = await _create_domain(client, admin_auth_header)
+    agent = await _create_agent(client, admin_auth_header, domain["id"])
 
     fake_redis = _patch_fake_redis(monkeypatch)
     _patch_enqueue(monkeypatch, fake_redis)
@@ -259,7 +270,7 @@ async def test_session_rate_limit_exceeded_returns_429(
 
     resp1 = await client.post(
         "/api/chat/stream",
-        json={"domain_id": domain["id"], "session_id": "same-session", "message": "hi"},
+        json={"agent_id": agent["id"], "session_id": "same-session", "message": "hi"},
         headers=api_key_header,
     )
     assert resp1.status_code == 200
@@ -269,7 +280,7 @@ async def test_session_rate_limit_exceeded_returns_429(
 
     resp2 = await client.post(
         "/api/chat/stream",
-        json={"domain_id": domain["id"], "session_id": "same-session", "message": "again"},
+        json={"agent_id": agent["id"], "session_id": "same-session", "message": "again"},
         headers=api_key_header,
     )
     assert resp2.status_code == 429
@@ -284,6 +295,7 @@ async def test_happy_path_streams_queued_token_and_done_frames(
 ):
     """Happy path: stream returns 200 with SSE frames."""
     domain = await _create_domain(client, admin_auth_header)
+    agent = await _create_agent(client, admin_auth_header, domain["id"])
 
     fake_redis = _patch_fake_redis(monkeypatch)
     enqueue_calls = _patch_enqueue(monkeypatch, fake_redis)
@@ -299,7 +311,7 @@ async def test_happy_path_streams_queued_token_and_done_frames(
 
     resp = await client.post(
         "/api/chat/stream",
-        json={"domain_id": domain["id"], "session_id": "s1", "message": "hello"},
+        json={"agent_id": agent["id"], "session_id": "s1", "message": "hello"},
         headers=api_key_header,
     )
     assert resp.status_code == 200
@@ -328,38 +340,12 @@ async def test_happy_path_streams_queued_token_and_done_frames(
     assert done_frame["type"] == "done"
 
 
-async def test_happy_path_by_slug(client, admin_auth_header, api_key_header, monkeypatch):
-    """Domain can be resolved by slug."""
-    domain = await _create_domain(client, admin_auth_header, name="By Slug Domain")
-
-    fake_redis = _patch_fake_redis(monkeypatch)
-    _patch_enqueue(monkeypatch, fake_redis)
-
-    # Mock relay_job_events to return a done frame immediately
-    from app.modules.chat.service import sse_frame
-
-    async def _mock_relay(pubsub):
-        yield sse_frame({"type": "done", "reply": "ok", "session_id": "s", "iterations": 1, "stopped_on": "final_answer"})
-
-    monkeypatch.setattr("app.modules.chat.router.relay_job_events", _mock_relay)
-
-    resp = await client.post(
-        "/api/chat/stream",
-        json={"domain_id": domain["slug"], "message": "hi"},
-        headers=api_key_header,
-        
-    )
-    assert resp.status_code == 200
-    # Just verify we got a response; don't read frames
-    async for _ in resp.aiter_lines():
-        break  # Just read first line
-
-
 async def test_enqueue_uses_generated_job_id_as_job_id_param(
     client, admin_auth_header, api_key_header, monkeypatch
 ):
     """The job_id in the enqueue call should match the job_id in the queued frame."""
     domain = await _create_domain(client, admin_auth_header)
+    agent = await _create_agent(client, admin_auth_header, domain["id"])
 
     fake_redis = _patch_fake_redis(monkeypatch)
     enqueue_calls = _patch_enqueue(monkeypatch, fake_redis)
@@ -374,9 +360,9 @@ async def test_enqueue_uses_generated_job_id_as_job_id_param(
 
     resp = await client.post(
         "/api/chat/stream",
-        json={"domain_id": domain["id"], "message": "test"},
+        json={"agent_id": agent["id"], "message": "test"},
         headers=api_key_header,
-        
+
     )
     assert resp.status_code == 200
 
@@ -401,37 +387,12 @@ async def test_error_frame_closes_stream(
 ):
     """When an error message is published, the stream should close after emitting it."""
     domain = await _create_domain(client, admin_auth_header)
+    agent = await _create_agent(client, admin_auth_header, domain["id"])
 
     fake_redis = _patch_fake_redis(monkeypatch)
     enqueue_calls = _patch_enqueue(monkeypatch, fake_redis)
 
-    # Patch enqueue to push an error message into the channel
-    original_enqueue = None
-
-    async def _enqueue_with_error(
-        *,
-        job_id: str,
-        domain_id: str,
-        session_id: str,
-        text: str,
-        metadata: dict[str, Any],
-        platform: str,
-    ) -> None:
-        # Call original to record the call
-        await original_enqueue(
-            job_id=job_id,
-            domain_id=domain_id,
-            session_id=session_id,
-            text=text,
-            metadata=metadata,
-            platform=platform,
-        )
-        # Push an error message
-        channel = f"chat:job:{job_id}"
-        # We need to reach into the pubsub somehow... this is tricky with the test setup
-        # Let's use a different approach: monkeypatch at the route level
-
-    # Actually, let me take a simpler approach: monkeypatch relay_job_events directly
+    # Monkeypatch relay_job_events directly to simulate an error frame
     async def _fake_relay_error(pubsub):
         from app.modules.chat.service import sse_frame
 
@@ -441,9 +402,9 @@ async def test_error_frame_closes_stream(
 
     resp = await client.post(
         "/api/chat/stream",
-        json={"domain_id": domain["id"], "message": "test"},
+        json={"agent_id": agent["id"], "message": "test"},
         headers=api_key_header,
-        
+
     )
     assert resp.status_code == 200
 
@@ -468,6 +429,7 @@ async def test_metadata_carries_app_identity(
 ):
     """The metadata dict passed to enqueue should include app_id and app_name."""
     domain = await _create_domain(client, admin_auth_header)
+    agent = await _create_agent(client, admin_auth_header, domain["id"])
 
     fake_redis = _patch_fake_redis(monkeypatch)
     enqueue_calls = _patch_enqueue(monkeypatch, fake_redis)
@@ -483,13 +445,13 @@ async def test_metadata_carries_app_identity(
     resp = await client.post(
         "/api/chat/stream",
         json={
-            "domain_id": domain["id"],
+            "agent_id": agent["id"],
             "session_id": "s1",
             "message": "test",
             "metadata": {"custom_key": "custom_value"},
         },
         headers=api_key_header,
-        
+
     )
     assert resp.status_code == 200
     # Consume the stream

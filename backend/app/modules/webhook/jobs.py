@@ -27,7 +27,7 @@ async def get_arq_pool() -> ArqRedis:
 
 async def enqueue_chat_job(
     *,
-    domain_id: str,
+    agent_id: str,
     session_id: str,
     text: str,
     metadata: dict[str, Any],
@@ -36,7 +36,7 @@ async def enqueue_chat_job(
     pool = await get_arq_pool()
     job = await pool.enqueue_job(
         "process_chat_job",
-        domain_id=domain_id,
+        agent_id=agent_id,
         session_id=session_id,
         text=text,
         metadata=metadata,

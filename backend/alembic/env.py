@@ -9,10 +9,12 @@ from alembic import context
 
 from app.core.config import get_settings
 from app.core.db import Base
+from app.modules.agent import models as agent_models  # noqa: F401
 from app.modules.apikey import models as apikey_models  # noqa: F401
 from app.modules.conversation import models as conversation_models  # noqa: F401
 from app.modules.document import models as document_models  # noqa: F401
 from app.modules.domain import models as domain_models  # noqa: F401
+from app.modules.mcp import models as mcp_models  # noqa: F401
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
