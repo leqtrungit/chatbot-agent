@@ -7,6 +7,7 @@ import uuid
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.modules.domain.models import Domain
 from app.modules.domain.schemas import DomainCreate, DomainUpdate
@@ -38,12 +39,20 @@ async def _check_conflict(
 
 
 async def list_domains(session: AsyncSession) -> list[Domain]:
-    result = await session.execute(select(Domain).order_by(Domain.created_at))
+    result = await session.execute(
+        select(Domain).options(selectinload(Domain.agents)).order_by(Domain.created_at)
+    )
     return list(result.scalars().all())
 
 
 async def get_domain(session: AsyncSession, domain_id: uuid.UUID) -> Domain:
-    domain = await session.get(Domain, domain_id)
+    # populate_existing=True: without it, session.get() silently ignores
+    # ``options`` and returns the cached identity-map object (with
+    # ``agents`` unloaded) whenever this domain was already touched earlier
+    # in the same session/request.
+    domain = await session.get(
+        Domain, domain_id, options=[selectinload(Domain.agents)], populate_existing=True
+    )
     if domain is None:
         raise DomainNotFoundError(str(domain_id))
     return domain
@@ -55,8 +64,7 @@ async def create_domain(session: AsyncSession, data: DomainCreate) -> Domain:
     domain = Domain(name=data.name, slug=slug, description=data.description)
     session.add(domain)
     await session.commit()
-    await session.refresh(domain)
-    return domain
+    return await get_domain(session, domain.id)
 
 
 async def update_domain(
@@ -72,8 +80,7 @@ async def update_domain(
     if data.description is not None:
         domain.description = data.description
     await session.commit()
-    await session.refresh(domain)
-    return domain
+    return await get_domain(session, domain.id)
 
 
 async def delete_domain(session: AsyncSession, domain_id: uuid.UUID) -> None:

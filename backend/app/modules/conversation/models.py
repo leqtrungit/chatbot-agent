@@ -13,7 +13,7 @@ from app.core.db import Base
 
 
 class ChatMessage(Base):
-    """A single persisted turn (user or assistant) for a (domain, session).
+    """A single persisted turn (user or assistant) for an (agent, session).
 
     Only the user's message and the agent's final answer are stored — no
     intermediate tool-call traffic — which is enough to reconstruct history
@@ -23,8 +23,8 @@ class ChatMessage(Base):
     __tablename__ = "chat_messages"
     __table_args__ = (
         Index(
-            "ix_chat_messages_domain_session_created",
-            "domain_id",
+            "ix_chat_messages_agent_session_created",
+            "agent_id",
             "session_id",
             "created_at",
         ),
@@ -34,8 +34,8 @@ class ChatMessage(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    domain_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("domains.id", ondelete="CASCADE"), nullable=False
+    agent_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("agents.id", ondelete="CASCADE"), nullable=False
     )
     session_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     role: Mapped[str] = mapped_column(String(16), nullable=False)

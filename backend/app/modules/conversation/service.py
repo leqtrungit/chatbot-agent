@@ -1,4 +1,4 @@
-"""Load/append chat history for a (domain, session) pair.
+"""Load/append chat history for an (agent, session) pair.
 
 Bridges the persisted ``ChatMessage`` rows to the plain ``app.agent`` message
 type (``app.agent.core.types.Message``) so the worker can pass history
@@ -22,15 +22,15 @@ _ROLE_MAP = {"user": Role.USER, "assistant": Role.ASSISTANT}
 
 async def load_history(
     session: AsyncSession,
-    domain_id: uuid.UUID,
+    agent_id: uuid.UUID,
     session_id: str,
     limit: int,
 ) -> list[Message]:
-    """Return the last ``limit`` messages for (domain_id, session_id) in
+    """Return the last ``limit`` messages for (agent_id, session_id) in
     chronological order, mapped to agent ``Message`` objects."""
     stmt = (
         select(ChatMessage)
-        .where(ChatMessage.domain_id == domain_id, ChatMessage.session_id == session_id)
+        .where(ChatMessage.agent_id == agent_id, ChatMessage.session_id == session_id)
         .order_by(ChatMessage.created_at.desc(), ChatMessage.id.desc())
         .limit(limit)
     )
@@ -42,7 +42,7 @@ async def load_history(
 
 async def append_turn(
     session: AsyncSession,
-    domain_id: uuid.UUID,
+    agent_id: uuid.UUID,
     session_id: str,
     user_text: str,
     assistant_text: str,
@@ -60,14 +60,14 @@ async def append_turn(
     session.add_all(
         [
             ChatMessage(
-                domain_id=domain_id,
+                agent_id=agent_id,
                 session_id=session_id,
                 role="user",
                 content=user_text,
                 created_at=user_ts,
             ),
             ChatMessage(
-                domain_id=domain_id,
+                agent_id=agent_id,
                 session_id=session_id,
                 role="assistant",
                 content=assistant_text,

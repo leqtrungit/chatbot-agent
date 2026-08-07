@@ -11,6 +11,7 @@ from app.agent.core.types import LLMResponse, Role, ToolCall
 from app.agent.providers.ollama import OllamaProvider
 from app.agent.providers.openai_compat import OpenAICompatProvider
 from app.core.config import get_settings
+from app.modules.agent.models import Agent
 from app.modules.conversation.models import ChatMessage
 from app.modules.domain.models import Domain
 from app.worker import tasks
@@ -48,13 +49,32 @@ async def _seed_domain(session_maker) -> uuid.UUID:
         return domain.id
 
 
+async def _seed_agent(session_maker, domain_ids: list[uuid.UUID] | None = None, **overrides) -> uuid.UUID:
+    async with session_maker() as session:
+        domains = []
+        if domain_ids:
+            result = await session.execute(select(Domain).where(Domain.id.in_(domain_ids)))
+            domains = list(result.scalars().all())
+        agent = Agent(
+            name=overrides.pop("name", f"Test Agent {uuid.uuid4()}"),
+            provider="ollama",
+            model_name="qwen2.5",
+            domains=domains,
+            **overrides,
+        )
+        session.add(agent)
+        await session.commit()
+        return agent.id
+
+
 async def test_process_chat_job_runs_agent_and_scopes_search(
     session_maker, monkeypatch, mock_llm
 ):
     domain_id = await _seed_domain(session_maker)
+    agent_id = await _seed_agent(session_maker, domain_ids=[domain_id])
 
     monkeypatch.setattr(tasks, "PgVectorKnowledgeSearcher", _FakeSearcher)
-    monkeypatch.setattr(tasks, "build_llm_provider", lambda settings: mock_llm)
+    monkeypatch.setattr(tasks, "build_llm_provider", lambda agent, settings: mock_llm)
 
     mock_llm.queue(
         LLMResponse(
@@ -72,7 +92,7 @@ async def test_process_chat_job_runs_agent_and_scopes_search(
 
     result = await tasks.process_chat_job(
         ctx,
-        domain_id=str(domain_id),
+        agent_id=str(agent_id),
         session_id="sess-1",
         text="What are your hours?",
         metadata={},
@@ -92,6 +112,53 @@ async def test_process_chat_job_runs_agent_and_scopes_search(
     assert len(searcher.calls) == 1
     assert searcher.calls[0]["domain_id"] == str(domain_id)
     assert searcher.calls[0]["query"] == "hours"
+
+
+async def test_process_chat_job_uses_agent_system_prompt_verbatim(session_maker, monkeypatch, mock_llm):
+    custom_prompt = "You are a pirate. Answer every question in pirate speak."
+    agent_id = await _seed_agent(session_maker, system_prompt=custom_prompt)
+
+    monkeypatch.setattr(tasks, "PgVectorKnowledgeSearcher", _FakeSearcher)
+    monkeypatch.setattr(tasks, "build_llm_provider", lambda agent, settings: mock_llm)
+
+    mock_llm.queue(LLMResponse(content="Arrr!", finish_reason="stop"))
+
+    ctx = await _make_ctx(session_maker)
+
+    await tasks.process_chat_job(
+        ctx,
+        agent_id=str(agent_id),
+        session_id="sess-pirate",
+        text="What are your hours?",
+        metadata={},
+        platform="generic",
+    )
+
+    assert mock_llm.calls[0]["messages"][0].content == custom_prompt
+
+
+async def test_process_chat_job_falls_back_to_builder_default_when_system_prompt_none(
+    session_maker, monkeypatch, mock_llm
+):
+    agent_id = await _seed_agent(session_maker)
+
+    monkeypatch.setattr(tasks, "PgVectorKnowledgeSearcher", _FakeSearcher)
+    monkeypatch.setattr(tasks, "build_llm_provider", lambda agent, settings: mock_llm)
+
+    mock_llm.queue(LLMResponse(content="Sure thing.", finish_reason="stop"))
+
+    ctx = await _make_ctx(session_maker)
+
+    result = await tasks.process_chat_job(
+        ctx,
+        agent_id=str(agent_id),
+        session_id="sess-default",
+        text="What are your hours?",
+        metadata={},
+        platform="generic",
+    )
+
+    assert result["reply"] == "Sure thing."
 
 
 async def test_ingest_document_task_delegates_to_pipeline(monkeypatch):
@@ -149,17 +216,17 @@ async def _make_ctx(session_maker, settings=None) -> dict[str, Any]:
 
 
 async def test_process_chat_job_persists_and_reuses_history(session_maker, monkeypatch, mock_llm):
-    domain_id = await _seed_domain(session_maker)
+    agent_id = await _seed_agent(session_maker)
 
     monkeypatch.setattr(tasks, "PgVectorKnowledgeSearcher", _FakeSearcher)
-    monkeypatch.setattr(tasks, "build_llm_provider", lambda settings: mock_llm)
+    monkeypatch.setattr(tasks, "build_llm_provider", lambda agent, settings: mock_llm)
 
     ctx = await _make_ctx(session_maker)
 
     mock_llm.queue(LLMResponse(content="First answer", finish_reason="stop"))
     await tasks.process_chat_job(
         ctx,
-        domain_id=str(domain_id),
+        agent_id=str(agent_id),
         session_id="sess-1",
         text="First question",
         metadata={},
@@ -169,7 +236,7 @@ async def test_process_chat_job_persists_and_reuses_history(session_maker, monke
     mock_llm.queue(LLMResponse(content="Second answer", finish_reason="stop"))
     await tasks.process_chat_job(
         ctx,
-        domain_id=str(domain_id),
+        agent_id=str(agent_id),
         session_id="sess-1",
         text="Second question",
         metadata={},
@@ -190,7 +257,7 @@ async def test_process_chat_job_persists_and_reuses_history(session_maker, monke
     async with session_maker() as session:
         result = await session.execute(
             select(ChatMessage)
-            .where(ChatMessage.domain_id == domain_id, ChatMessage.session_id == "sess-1")
+            .where(ChatMessage.agent_id == agent_id, ChatMessage.session_id == "sess-1")
             .order_by(ChatMessage.created_at, ChatMessage.id)
         )
         rows = list(result.scalars().all())
@@ -204,20 +271,20 @@ async def test_process_chat_job_persists_and_reuses_history(session_maker, monke
 
 
 async def test_process_chat_job_history_scoped_by_session(session_maker, monkeypatch, mock_llm):
-    domain_id = await _seed_domain(session_maker)
+    agent_id = await _seed_agent(session_maker)
     monkeypatch.setattr(tasks, "PgVectorKnowledgeSearcher", _FakeSearcher)
-    monkeypatch.setattr(tasks, "build_llm_provider", lambda settings: mock_llm)
+    monkeypatch.setattr(tasks, "build_llm_provider", lambda agent, settings: mock_llm)
 
     ctx = await _make_ctx(session_maker)
 
     mock_llm.queue(LLMResponse(content="Answer A", finish_reason="stop"))
     await tasks.process_chat_job(
-        ctx, domain_id=str(domain_id), session_id="sess-a", text="Question A", metadata={}, platform="generic"
+        ctx, agent_id=str(agent_id), session_id="sess-a", text="Question A", metadata={}, platform="generic"
     )
 
     mock_llm.queue(LLMResponse(content="Answer B", finish_reason="stop"))
     await tasks.process_chat_job(
-        ctx, domain_id=str(domain_id), session_id="sess-b", text="Question B", metadata={}, platform="generic"
+        ctx, agent_id=str(agent_id), session_id="sess-b", text="Question B", metadata={}, platform="generic"
     )
 
     second_call_messages = mock_llm.calls[1]["messages"]
@@ -226,39 +293,34 @@ async def test_process_chat_job_history_scoped_by_session(session_maker, monkeyp
     assert second_call_messages[1].content == "Question B"
 
 
-async def test_process_chat_job_history_scoped_by_domain(session_maker, monkeypatch, mock_llm):
-    domain_a = await _seed_domain(session_maker)
-    async with session_maker() as session:
-        domain_b_obj = Domain(name="Other Domain", slug="other-domain", description="")
-        session.add(domain_b_obj)
-        await session.commit()
-        domain_b = domain_b_obj.id
-
+async def test_process_chat_job_history_scoped_by_agent(session_maker, monkeypatch, mock_llm):
+    agent_a = await _seed_agent(session_maker)
+    agent_b = await _seed_agent(session_maker)
     monkeypatch.setattr(tasks, "PgVectorKnowledgeSearcher", _FakeSearcher)
-    monkeypatch.setattr(tasks, "build_llm_provider", lambda settings: mock_llm)
+    monkeypatch.setattr(tasks, "build_llm_provider", lambda agent, settings: mock_llm)
 
     ctx = await _make_ctx(session_maker)
 
     mock_llm.queue(LLMResponse(content="Answer A", finish_reason="stop"))
     await tasks.process_chat_job(
-        ctx, domain_id=str(domain_a), session_id="shared-session", text="Question A", metadata={}, platform="generic"
+        ctx, agent_id=str(agent_a), session_id="shared-session", text="Question A", metadata={}, platform="generic"
     )
 
     mock_llm.queue(LLMResponse(content="Answer B", finish_reason="stop"))
     await tasks.process_chat_job(
-        ctx, domain_id=str(domain_b), session_id="shared-session", text="Question B", metadata={}, platform="generic"
+        ctx, agent_id=str(agent_b), session_id="shared-session", text="Question B", metadata={}, platform="generic"
     )
 
     second_call_messages = mock_llm.calls[1]["messages"]
-    # same session_id but different domain: history must not leak across domains
+    # same session_id but different agent: history must not leak across agents
     assert len(second_call_messages) == 2
     assert second_call_messages[1].content == "Question B"
 
 
 async def test_process_chat_job_history_truncated_to_limit(session_maker, monkeypatch, mock_llm):
-    domain_id = await _seed_domain(session_maker)
+    agent_id = await _seed_agent(session_maker)
     monkeypatch.setattr(tasks, "PgVectorKnowledgeSearcher", _FakeSearcher)
-    monkeypatch.setattr(tasks, "build_llm_provider", lambda settings: mock_llm)
+    monkeypatch.setattr(tasks, "build_llm_provider", lambda agent, settings: mock_llm)
 
     settings = get_settings().model_copy(update={"CHAT_HISTORY_LIMIT": 2})
     ctx = await _make_ctx(session_maker, settings=settings)
@@ -267,7 +329,7 @@ async def test_process_chat_job_history_truncated_to_limit(session_maker, monkey
         mock_llm.queue(LLMResponse(content=f"Answer {i}", finish_reason="stop"))
         await tasks.process_chat_job(
             ctx,
-            domain_id=str(domain_id),
+            agent_id=str(agent_id),
             session_id="sess-limit",
             text=f"Question {i}",
             metadata={},
@@ -277,7 +339,7 @@ async def test_process_chat_job_history_truncated_to_limit(session_maker, monkey
     mock_llm.queue(LLMResponse(content="Answer 3", finish_reason="stop"))
     await tasks.process_chat_job(
         ctx,
-        domain_id=str(domain_id),
+        agent_id=str(agent_id),
         session_id="sess-limit",
         text="Question 3",
         metadata={},
@@ -293,22 +355,25 @@ async def test_process_chat_job_history_truncated_to_limit(session_maker, monkey
 
 
 async def test_process_chat_job_does_not_persist_when_agent_raises(session_maker, monkeypatch, mock_llm):
-    domain_id = await _seed_domain(session_maker)
+    agent_id = await _seed_agent(session_maker)
     monkeypatch.setattr(tasks, "PgVectorKnowledgeSearcher", _FakeSearcher)
-    monkeypatch.setattr(tasks, "build_llm_provider", lambda settings: mock_llm)
+    monkeypatch.setattr(tasks, "build_llm_provider", lambda agent, settings: mock_llm)
 
     class _ExplodingAgent:
         async def run(self, text, history=None):
             raise RuntimeError("boom")
 
-    monkeypatch.setattr(tasks, "build_domain_agent", lambda *args, **kwargs: _ExplodingAgent())
+    async def _fake_build_agent(*args, **kwargs):
+        return _ExplodingAgent()
+
+    monkeypatch.setattr(tasks, "build_agent", _fake_build_agent)
 
     ctx = await _make_ctx(session_maker)
 
     with pytest.raises(RuntimeError):
         await tasks.process_chat_job(
             ctx,
-            domain_id=str(domain_id),
+            agent_id=str(agent_id),
             session_id="sess-err",
             text="What are your hours?",
             metadata={},
@@ -320,7 +385,7 @@ async def test_process_chat_job_does_not_persist_when_agent_raises(session_maker
             (
                 await session.execute(
                     select(ChatMessage).where(
-                        ChatMessage.domain_id == domain_id, ChatMessage.session_id == "sess-err"
+                        ChatMessage.agent_id == agent_id, ChatMessage.session_id == "sess-err"
                     )
                 )
             )
@@ -330,28 +395,52 @@ async def test_process_chat_job_does_not_persist_when_agent_raises(session_maker
     assert rows == []
 
 
-def test_build_llm_provider_defaults_to_ollama():
-    settings = get_settings().model_copy(update={"LLM_PROVIDER": "ollama", "OLLAMA_BASE_URL": "http://ollama.local"})
-    provider = tasks.build_llm_provider(settings)
+def _make_agent_row(**overrides) -> Agent:
+    defaults = dict(name="x", provider="ollama", model_name="qwen2.5", base_url=None, api_key=None)
+    defaults.update(overrides)
+    return Agent(**defaults)
+
+
+def test_build_llm_provider_uses_agent_base_url_over_settings_default():
+    settings = get_settings().model_copy(update={"OLLAMA_BASE_URL": "http://settings-default.local"})
+    agent = _make_agent_row(provider="ollama", base_url="http://agent-specific.local")
+    provider = tasks.build_llm_provider(agent, settings)
+    assert isinstance(provider, OllamaProvider)
+    assert provider.base_url == "http://agent-specific.local"
+
+
+def test_build_llm_provider_falls_back_to_settings_ollama_base_url():
+    settings = get_settings().model_copy(update={"OLLAMA_BASE_URL": "http://ollama.local"})
+    agent = _make_agent_row(provider="ollama", base_url=None)
+    provider = tasks.build_llm_provider(agent, settings)
     assert isinstance(provider, OllamaProvider)
     assert provider.base_url == "http://ollama.local"
 
 
 def test_build_llm_provider_returns_openai_compat_provider():
     settings = get_settings().model_copy(
-        update={
-            "LLM_PROVIDER": "openai",
-            "OPENAI_BASE_URL": "http://openai.local/v1",
-            "OPENAI_API_KEY": "sk-test",
-        }
+        update={"OPENAI_BASE_URL": "http://settings-default.local/v1", "OPENAI_API_KEY": "sk-settings"}
     )
-    provider = tasks.build_llm_provider(settings)
+    agent = _make_agent_row(provider="openai", base_url="http://openai.local/v1", api_key="sk-test")
+    provider = tasks.build_llm_provider(agent, settings)
     assert isinstance(provider, OpenAICompatProvider)
     assert provider.base_url == "http://openai.local/v1"
     assert provider.api_key == "sk-test"
 
 
+def test_build_llm_provider_openai_falls_back_to_settings_credentials():
+    settings = get_settings().model_copy(
+        update={"OPENAI_BASE_URL": "http://settings-default.local/v1", "OPENAI_API_KEY": "sk-settings"}
+    )
+    agent = _make_agent_row(provider="openai", base_url=None, api_key=None)
+    provider = tasks.build_llm_provider(agent, settings)
+    assert isinstance(provider, OpenAICompatProvider)
+    assert provider.base_url == "http://settings-default.local/v1"
+    assert provider.api_key == "sk-settings"
+
+
 def test_build_llm_provider_raises_on_unknown_provider():
-    settings = get_settings().model_copy(update={"LLM_PROVIDER": "bogus"})
+    settings = get_settings()
+    agent = _make_agent_row(provider="bogus")
     with pytest.raises(ValueError):
-        tasks.build_llm_provider(settings)
+        tasks.build_llm_provider(agent, settings)

@@ -14,7 +14,7 @@ from app.modules.webhook.jobs import get_arq_pool
 async def enqueue_chat_stream_job(
     *,
     job_id: str,
-    domain_id: str,
+    agent_id: str,
     session_id: str,
     text: str,
     metadata: dict[str, Any],
@@ -25,7 +25,7 @@ async def enqueue_chat_stream_job(
     Args:
         job_id: Pre-generated job ID (caller's responsibility to generate
             and subscribe to the pubsub channel before calling this).
-        domain_id: The domain to run the agent in.
+        agent_id: The agent (provider/model/tools config) to run.
         session_id: Session identifier for grouping related messages.
         text: The user's message.
         metadata: Additional metadata (will include app_id and app_name).
@@ -35,7 +35,7 @@ async def enqueue_chat_stream_job(
     job = await pool.enqueue_job(
         "process_chat_job_stream",
         _job_id=job_id,
-        domain_id=domain_id,
+        agent_id=agent_id,
         session_id=session_id,
         text=text,
         metadata=metadata,

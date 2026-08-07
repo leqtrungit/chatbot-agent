@@ -7,7 +7,7 @@ from datetime import datetime
 
 from sqlalchemy import DateTime, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.db import Base
 
@@ -29,4 +29,8 @@ class Domain(Base):
         server_default=func.now(),
         onupdate=func.now(),
         nullable=False,
+    )
+
+    agents: Mapped[list["Agent"]] = relationship(  # noqa: F821
+        "Agent", secondary="domain_agents", back_populates="domains"
     )

@@ -13,7 +13,7 @@ class ChannelParseError(ValueError):
 
 
 class IncomingMessage(BaseModel):
-    domain_id: str
+    agent_id: str
     session_id: str
     text: str
     metadata: dict[str, Any] = Field(default_factory=dict)

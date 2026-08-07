@@ -1,6 +1,6 @@
 """SSE chat streaming endpoint.
 
-Reuses webhook module's auth, rate-limiting, domain resolution, and arq pool.
+Reuses webhook module's auth, rate-limiting, and arq pool.
 """
 
 from __future__ import annotations
@@ -14,13 +14,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.core.db import get_session
 from app.core.ratelimit import check_rate_limit
+from app.modules.agent import service as agent_service
 from app.modules.apikey.deps import require_api_key
 from app.modules.apikey.models import ApiKey
 from app.modules.chat import jobs as job_helpers
 from app.modules.chat.schemas import ChatStreamRequest
 from app.modules.chat.service import relay_job_events, sse_frame
 from app.modules.webhook import jobs as webhook_jobs
-from app.modules.webhook import service as webhook_service
 
 chat_router = APIRouter(tags=["chat"])
 
@@ -69,11 +69,15 @@ async def stream_chat(
             headers={"Retry-After": str(session_result.retry_after)},
         )
 
-    # Resolve domain by UUID or slug
+    # Resolve the agent
     try:
-        domain = await webhook_service.resolve_domain(session, body.domain_id)
-    except webhook_service.DomainNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Domain not found") from exc
+        agent_uuid = uuid.UUID(body.agent_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+    try:
+        agent = await agent_service.get_agent(session, agent_uuid)
+    except agent_service.AgentNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
 
     # Generate job_id and subscribe BEFORE enqueueing
     # (critical ordering to avoid missing messages published by the worker)
@@ -88,7 +92,7 @@ async def stream_chat(
     # Enqueue the job (now that we're subscribed, no messages will be missed)
     await job_helpers.enqueue_chat_stream_job(
         job_id=job_id,
-        domain_id=str(domain.id),
+        agent_id=str(agent.id),
         session_id=session_id,
         text=body.message,
         metadata=metadata,
