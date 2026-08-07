@@ -39,10 +39,12 @@ import {
   ApiError,
   deleteDocument,
   getDomain,
+  listAgents,
   listDocuments,
+  setDomainAgents,
   uploadDocument,
 } from "@/lib/api";
-import type { Document, DocumentStatus, Domain } from "@/lib/types";
+import type { Agent, Document, DocumentStatus, Domain } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const ACCEPTED_EXTENSIONS = [".pdf", ".docx", ".txt", ".md"];
@@ -72,6 +74,8 @@ export default function DomainDocumentsPage({
 
   const [domain, setDomain] = useState<Domain | null>(null);
   const [documents, setDocuments] = useState<Document[]>([]);
+  const [agents, setAgents] = useState<Agent[]>([]);
+  const [savingAgents, setSavingAgents] = useState(false);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [dragActive, setDragActive] = useState(false);
@@ -96,17 +100,28 @@ export default function DomainDocumentsPage({
     async function load() {
       setLoading(true);
       try {
-        const [domainData, docs] = await Promise.all([
+        const [domainResult, docsResult, agentsResult] = await Promise.allSettled([
           getDomain(id),
           listDocuments(id),
+          listAgents(),
         ]);
-        if (!cancelled) {
-          setDomain(domainData);
-          setDocuments(docs);
-        }
-      } catch (err) {
-        if (err instanceof ApiError && err.status !== 401) {
-          toast.error("Failed to load domain", { description: err.message });
+        if (cancelled) return;
+
+        if (domainResult.status === "fulfilled") setDomain(domainResult.value);
+        if (docsResult.status === "fulfilled") setDocuments(docsResult.value);
+        if (agentsResult.status === "fulfilled") setAgents(agentsResult.value);
+
+        for (const [label, result] of [
+          ["domain", domainResult],
+          ["documents", docsResult],
+          ["agents", agentsResult],
+        ] as const) {
+          if (result.status === "rejected") {
+            const err = result.reason;
+            if (err instanceof ApiError && err.status !== 401) {
+              toast.error(`Failed to load ${label}`, { description: err.message });
+            }
+          }
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -167,6 +182,24 @@ export default function DomainDocumentsPage({
     }
   }
 
+  async function toggleAgent(agentId: string) {
+    if (!domain) return;
+    const nextAgentIds = domain.agent_ids.includes(agentId)
+      ? domain.agent_ids.filter((x) => x !== agentId)
+      : [...domain.agent_ids, agentId];
+    setSavingAgents(true);
+    try {
+      const updated = await setDomainAgents(domain.id, nextAgentIds);
+      setDomain(updated);
+    } catch (err) {
+      if (err instanceof ApiError) {
+        toast.error("Failed to update assigned agents", { description: err.message });
+      }
+    } finally {
+      setSavingAgents(false);
+    }
+  }
+
   async function handleDelete() {
     if (!deleteTarget) return;
     setDeleting(true);
@@ -208,6 +241,39 @@ export default function DomainDocumentsPage({
               <p className="text-sm text-muted-foreground">{domain.description}</p>
             ) : null}
           </>
+        )}
+      </div>
+
+      <div className="rounded-xl border p-4">
+        <div className="mb-2 flex items-center justify-between">
+          <h2 className="text-sm font-medium">Assigned agents</h2>
+          {savingAgents ? <Loader2Icon className="size-4 animate-spin text-muted-foreground" /> : null}
+        </div>
+        {agents.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No agents created yet. Create one on the{" "}
+            <Link href="/agents" className="text-primary hover:underline">
+              Agents
+            </Link>{" "}
+            page, then assign it here.
+          </p>
+        ) : (
+          <div className="flex flex-col gap-1.5">
+            {agents.map((agent) => (
+              <label key={agent.id} className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={domain?.agent_ids.includes(agent.id) ?? false}
+                  disabled={savingAgents || !domain}
+                  onChange={() => toggleAgent(agent.id)}
+                />
+                {agent.name}
+                <span className="text-xs text-muted-foreground">
+                  ({agent.provider} / {agent.model_name})
+                </span>
+              </label>
+            ))}
+          </div>
         )}
       </div>
 

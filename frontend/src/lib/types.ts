@@ -7,6 +7,7 @@ export interface Domain {
   description?: string | null;
   created_at: string;
   updated_at: string;
+  agent_ids: string[];
 }
 
 export interface CreateDomainInput {
@@ -33,10 +34,91 @@ export interface Document {
 }
 
 export interface SendChatMessageInput {
-  domain_id: string;
+  agent_id: string;
   session_id?: string;
   message: string;
   metadata?: Record<string, unknown>;
+}
+
+export type AgentProvider = "ollama" | "openai";
+
+export interface Agent {
+  id: string;
+  name: string;
+  provider: AgentProvider;
+  base_url?: string | null;
+  model_name: string;
+  system_prompt?: string | null;
+  max_iterations: number;
+  temperature?: number | null;
+  top_p?: number | null;
+  enable_knowledge_search: boolean;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+  mcp_server_ids: string[];
+  domain_ids: string[];
+}
+
+export interface CreateAgentInput {
+  name: string;
+  provider: AgentProvider;
+  base_url?: string;
+  api_key?: string;
+  model_name: string;
+  system_prompt?: string | null;
+  max_iterations?: number;
+  temperature?: number;
+  top_p?: number;
+  enable_knowledge_search?: boolean;
+  is_active?: boolean;
+  mcp_server_ids?: string[];
+  domain_ids?: string[];
+}
+
+export interface UpdateAgentInput {
+  name?: string;
+  provider?: AgentProvider;
+  base_url?: string;
+  api_key?: string;
+  model_name?: string;
+  system_prompt?: string | null;
+  max_iterations?: number;
+  temperature?: number;
+  top_p?: number;
+  enable_knowledge_search?: boolean;
+  is_active?: boolean;
+  mcp_server_ids?: string[];
+  domain_ids?: string[];
+}
+
+export type McpTransport = "http" | "sse";
+
+export interface McpServer {
+  id: string;
+  name: string;
+  url: string;
+  transport: McpTransport;
+  headers?: Record<string, string> | null;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateMcpServerInput {
+  name: string;
+  url: string;
+  transport?: McpTransport;
+  headers?: Record<string, string>;
+  is_active?: boolean;
+}
+
+export interface UpdateMcpServerInput {
+  name?: string;
+  url?: string;
+  transport?: McpTransport;
+  headers?: Record<string, string>;
+  is_active?: boolean;
 }
 
 export interface SendChatMessageResponse {

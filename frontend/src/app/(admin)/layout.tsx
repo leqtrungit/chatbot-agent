@@ -5,11 +5,13 @@ import { usePathname, useRouter } from "next/navigation";
 import { useState, useSyncExternalStore } from "react";
 import { useTheme } from "next-themes";
 import {
+  BotIcon,
   FolderKanban,
   KeyRound,
   LogOut,
   MessageSquare,
   MoonIcon,
+  PlugZap,
   SunIcon,
   User,
 } from "lucide-react";
@@ -30,6 +32,8 @@ import { PlaygroundDrawer } from "@/components/playground-drawer";
 
 const NAV_ITEMS = [
   { href: "/domains", label: "Domains", icon: FolderKanban },
+  { href: "/agents", label: "Agents", icon: BotIcon },
+  { href: "/mcp-servers", label: "MCP Servers", icon: PlugZap },
   { href: "/api-keys", label: "API Keys", icon: KeyRound },
 ];
 

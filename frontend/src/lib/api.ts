@@ -1,15 +1,21 @@
 import { clearAuthToken, getAuthHeader } from "@/lib/auth";
 import type {
+  Agent,
   ApiKey,
+  CreateAgentInput,
   CreateApiKeyInput,
   CreateApiKeyResponse,
   CreateDomainInput,
+  CreateMcpServerInput,
   Document,
   Domain,
   Job,
+  McpServer,
   SendChatMessageInput,
   SendChatMessageResponse,
+  UpdateAgentInput,
   UpdateDomainInput,
+  UpdateMcpServerInput,
 } from "@/lib/types";
 
 export interface ChatStreamEvent {
@@ -139,6 +145,70 @@ export function deleteDomain(id: string): Promise<void> {
 
 export function getDomain(id: string): Promise<Domain> {
   return request<Domain>(`/api/domains/${id}`);
+}
+
+export function setDomainAgents(id: string, agentIds: string[]): Promise<Domain> {
+  return request<Domain>(`/api/domains/${id}/agents`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ agent_ids: agentIds }),
+  });
+}
+
+// ---- Agents ----
+
+export function listAgents(): Promise<Agent[]> {
+  return request<Agent[]>("/api/agents");
+}
+
+export function getAgent(id: string): Promise<Agent> {
+  return request<Agent>(`/api/agents/${id}`);
+}
+
+export function createAgent(input: CreateAgentInput): Promise<Agent> {
+  return request<Agent>("/api/agents", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateAgent(id: string, input: UpdateAgentInput): Promise<Agent> {
+  return request<Agent>(`/api/agents/${id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+}
+
+export function deleteAgent(id: string): Promise<void> {
+  return request<void>(`/api/agents/${id}`, { method: "DELETE" });
+}
+
+// ---- MCP servers ----
+
+export function listMcpServers(): Promise<McpServer[]> {
+  return request<McpServer[]>("/api/mcp-servers");
+}
+
+export function createMcpServer(input: CreateMcpServerInput): Promise<McpServer> {
+  return request<McpServer>("/api/mcp-servers", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateMcpServer(id: string, input: UpdateMcpServerInput): Promise<McpServer> {
+  return request<McpServer>(`/api/mcp-servers/${id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+}
+
+export function deleteMcpServer(id: string): Promise<void> {
+  return request<void>(`/api/mcp-servers/${id}`, { method: "DELETE" });
 }
 
 // ---- Documents ----
