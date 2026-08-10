@@ -117,9 +117,9 @@ class OllamaProvider:
 
         usage: dict[str, int] = {}
         if "prompt_eval_count" in data:
-            usage["prompt_eval_count"] = data["prompt_eval_count"]
+            usage["prompt_tokens"] = data["prompt_eval_count"]
         if "eval_count" in data:
-            usage["eval_count"] = data["eval_count"]
+            usage["completion_tokens"] = data["eval_count"]
 
         return LLMResponse(
             content=message.get("content", ""),
@@ -181,9 +181,9 @@ class OllamaProvider:
                 if data.get("done"):
                     done_reason = data.get("done_reason")
                     if "prompt_eval_count" in data:
-                        usage["prompt_eval_count"] = data["prompt_eval_count"]
+                        usage["prompt_tokens"] = data["prompt_eval_count"]
                     if "eval_count" in data:
-                        usage["eval_count"] = data["eval_count"]
+                        usage["completion_tokens"] = data["eval_count"]
                     break
 
         # Build tool_calls from captured raw data

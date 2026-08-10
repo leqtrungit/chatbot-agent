@@ -61,6 +61,7 @@ class Agent:
 
         last_text = ""
         iterations = 0
+        usage_totals: dict[str, int] = {}
         for iterations in range(1, self.max_iterations + 1):
             response: LLMResponse = await self.llm.chat(
                 messages,
@@ -68,6 +69,7 @@ class Agent:
                 tools=tool_definitions,
                 params=self.params,
             )
+            self._accumulate_usage(usage_totals, response.usage)
 
             if response.content:
                 last_text = response.content
@@ -79,6 +81,7 @@ class Agent:
                     messages=messages,
                     iterations=iterations,
                     stopped_on="final_answer",
+                    usage=usage_totals,
                 )
 
             messages.append(
@@ -100,6 +103,7 @@ class Agent:
             messages=messages,
             iterations=iterations,
             stopped_on="max_iterations",
+            usage=usage_totals,
         )
 
     async def run_stream(
@@ -115,6 +119,7 @@ class Agent:
 
         last_text = ""
         iterations = 0
+        usage_totals: dict[str, int] = {}
         for iterations in range(1, self.max_iterations + 1):
             response: LLMResponse | None = None
             async for chunk in self.llm.chat_stream(
@@ -128,6 +133,7 @@ class Agent:
                     continue
                 response = chunk.response
             assert response is not None, "LLMProvider.chat_stream contract violated: no done=True chunk with a response"
+            self._accumulate_usage(usage_totals, response.usage)
 
             if response.content:
                 last_text = response.content
@@ -141,6 +147,7 @@ class Agent:
                         messages=messages,
                         iterations=iterations,
                         stopped_on="final_answer",
+                        usage=usage_totals,
                     ),
                 )
                 return
@@ -166,8 +173,14 @@ class Agent:
                 messages=messages,
                 iterations=iterations,
                 stopped_on="max_iterations",
+                usage=usage_totals,
             ),
         )
+
+    @staticmethod
+    def _accumulate_usage(totals: dict[str, int], usage: dict[str, int]) -> None:
+        for key, value in usage.items():
+            totals[key] = totals.get(key, 0) + value
 
     async def _execute_tool_call(self, call: ToolCall) -> ToolResult:
         tool = self._tools_by_name.get(call.name)

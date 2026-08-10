@@ -104,6 +104,22 @@ async def test_unknown_agent_returns_404(client, admin_auth_header, api_key_head
     assert resp.status_code == 404
 
 
+async def test_inactive_agent_returns_404(client, admin_auth_header, api_key_header):
+    domain = await _create_domain(client, admin_auth_header)
+    agent = await _create_agent(client, admin_auth_header, domain["id"])
+    deactivate = await client.put(
+        f"/api/agents/{agent['id']}", json={"is_active": False}, headers=admin_auth_header
+    )
+    assert deactivate.status_code == 200
+
+    resp = await client.post(
+        "/api/webhooks/generic",
+        json={"agent_id": agent["id"], "message": "hi"},
+        headers=api_key_header,
+    )
+    assert resp.status_code == 404
+
+
 # ---- API key auth ----
 
 

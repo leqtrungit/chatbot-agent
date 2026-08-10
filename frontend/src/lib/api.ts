@@ -1,7 +1,10 @@
 import { clearAuthToken, getAuthHeader } from "@/lib/auth";
 import type {
   Agent,
+  AnalyticsRange,
   ApiKey,
+  BreakdownBy,
+  BreakdownRow,
   CreateAgentInput,
   CreateApiKeyInput,
   CreateApiKeyResponse,
@@ -13,9 +16,11 @@ import type {
   McpServer,
   SendChatMessageInput,
   SendChatMessageResponse,
+  TimeseriesPoint,
   UpdateAgentInput,
   UpdateDomainInput,
   UpdateMcpServerInput,
+  UsageSummary,
 } from "@/lib/types";
 
 export interface ChatStreamEvent {
@@ -255,6 +260,20 @@ export function createApiKey(
 
 export function revokeApiKey(id: string): Promise<ApiKey> {
   return request<ApiKey>(`/api/api-keys/${id}/revoke`, { method: "POST" });
+}
+
+// ---- Analytics ----
+
+export function getUsageSummary(range: AnalyticsRange): Promise<UsageSummary> {
+  return request<UsageSummary>(`/api/analytics/summary?range=${range}`);
+}
+
+export function getTimeseries(range: AnalyticsRange): Promise<TimeseriesPoint[]> {
+  return request<TimeseriesPoint[]>(`/api/analytics/timeseries?range=${range}`);
+}
+
+export function getBreakdown(by: BreakdownBy, range: AnalyticsRange): Promise<BreakdownRow[]> {
+  return request<BreakdownRow[]>(`/api/analytics/breakdown?by=${by}&range=${range}`);
 }
 
 // ---- Webhook / Jobs (no admin auth — authenticated via X-API-Key) ----

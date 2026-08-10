@@ -150,6 +150,7 @@ class OpenAICompatProvider:
             "model": model,
             "messages": [_message_to_openai(m) for m in messages],
             "stream": True,  # Explicitly enable streaming
+            "stream_options": {"include_usage": True},
         }
         if tools:
             payload["tools"] = [_tool_to_openai(t) for t in tools]
@@ -159,6 +160,7 @@ class OpenAICompatProvider:
         content = ""
         finish_reason: str | None = None
         tool_accum: dict[int, dict] = {}  # keyed by tool call index
+        usage: dict[str, int] = {}
 
         async with self._client.stream(
             "POST",
@@ -189,6 +191,16 @@ class OpenAICompatProvider:
                     chunk = json.loads(data_str)
                 except json.JSONDecodeError:
                     continue
+
+                # OpenAI's trailing usage-only chunk (stream_options.include_usage)
+                # has an empty `choices` list and must be captured before the
+                # empty-choices skip below drops it.
+                chunk_usage = chunk.get("usage")
+                if chunk_usage:
+                    if "prompt_tokens" in chunk_usage:
+                        usage["prompt_tokens"] = chunk_usage["prompt_tokens"]
+                    if "completion_tokens" in chunk_usage:
+                        usage["completion_tokens"] = chunk_usage["completion_tokens"]
 
                 # Extract the first choice
                 if "choices" not in chunk or not chunk["choices"]:
@@ -253,15 +265,13 @@ class OpenAICompatProvider:
         ]
 
         # Yield final chunk with complete response
-        # Note: usage is deliberately left empty (scope cut; not requesting
-        # stream_options.include_usage from OpenAI)
         yield StreamChunk(
             done=True,
             response=LLMResponse(
                 content=content,
                 tool_calls=tool_calls,
                 finish_reason=finish_reason,
-                usage={},
+                usage=usage,
             ),
         )
 

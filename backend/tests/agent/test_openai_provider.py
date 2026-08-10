@@ -465,8 +465,30 @@ async def test_chat_stream_accumulates_multiple_interleaved_tool_calls():
     assert final.response.tool_calls[1].arguments == {"b": "y"}
 
 
-async def test_chat_stream_usage_defaults_to_empty_dict():
-    """Verify that streaming response usage is deliberately empty (scope cut)."""
+async def test_chat_stream_requests_usage_via_stream_options():
+    """Verify streaming requests set stream_options.include_usage so the
+    server sends a trailing usage-only chunk."""
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            content=b'data: {"choices":[{"index":0,"delta":{"content":"result"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+        )
+
+    provider = make_provider(handler)
+    _ = [
+        c async for c in provider.chat_stream(
+            [Message(role=Role.USER, content="hi")], model="gpt-4o-mini"
+        )
+    ]
+
+    assert captured["body"]["stream_options"] == {"include_usage": True}
+
+
+async def test_chat_stream_usage_defaults_to_empty_dict_when_server_omits_it():
+    """If the server never sends a usage chunk, usage stays empty rather than crashing."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -484,3 +506,32 @@ async def test_chat_stream_usage_defaults_to_empty_dict():
     final = chunks[-1]
     assert final.response is not None
     assert final.response.usage == {}
+
+
+async def test_chat_stream_parses_trailing_usage_only_chunk():
+    """OpenAI sends a final chunk with empty choices and a top-level usage
+    object when stream_options.include_usage is set — must not be dropped
+    by the empty-choices skip."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=(
+                b'data: {"choices":[{"index":0,"delta":{"content":"Hello!"},"finish_reason":"stop"}]}\n\n'
+                b'data: {"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":6,"total_tokens":18}}\n\n'
+                b'data: [DONE]\n\n'
+            ),
+        )
+
+    provider = make_provider(handler)
+    chunks = [
+        c async for c in provider.chat_stream(
+            [Message(role=Role.USER, content="hi")], model="gpt-4o-mini"
+        )
+    ]
+
+    final = chunks[-1]
+    assert final.done is True
+    assert final.response is not None
+    assert final.response.content == "Hello!"
+    assert final.response.usage == {"prompt_tokens": 12, "completion_tokens": 6}
