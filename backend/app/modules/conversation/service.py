@@ -40,6 +40,27 @@ async def load_history(
     return [Message(role=_ROLE_MAP[row.role], content=row.content) for row in rows]
 
 
+async def list_messages(
+    session: AsyncSession,
+    agent_id: uuid.UUID,
+    session_id: str,
+    limit: int,
+) -> list[ChatMessage]:
+    """Return the last ``limit`` messages for (agent_id, session_id) in
+    chronological order, as raw rows — for HTTP display, not for feeding
+    back into ``Agent.run`` (see ``load_history`` for that)."""
+    stmt = (
+        select(ChatMessage)
+        .where(ChatMessage.agent_id == agent_id, ChatMessage.session_id == session_id)
+        .order_by(ChatMessage.created_at.desc(), ChatMessage.id.desc())
+        .limit(limit)
+    )
+    result = await session.execute(stmt)
+    rows = list(result.scalars().all())
+    rows.reverse()
+    return rows
+
+
 async def append_turn(
     session: AsyncSession,
     agent_id: uuid.UUID,

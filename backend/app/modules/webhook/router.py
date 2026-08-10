@@ -8,8 +8,6 @@ fixed-window rate limits per API key and per session.
 
 from __future__ import annotations
 
-import uuid
-
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,9 +15,7 @@ from app.channels.base import ChannelParseError
 from app.channels.registry import ChannelNotRegisteredError, get_channel_registry
 from app.core.config import get_settings
 from app.core.db import get_session
-from app.core.ratelimit import check_rate_limit
-from app.modules.agent import service as agent_service
-from app.modules.apikey.deps import require_api_key
+from app.modules.apikey.deps import build_job_metadata, enforce_rate_limits, require_api_key, resolve_agent_or_404
 from app.modules.apikey.models import ApiKey
 from app.modules.webhook import jobs as job_helpers
 from app.modules.webhook.schemas import JobStatusRead, WebhookAck
@@ -56,37 +52,11 @@ async def receive_webhook(
     settings = get_settings()
     redis = await job_helpers.get_arq_pool()
 
-    key_limit = api_key.rate_limit_per_minute or settings.RATE_LIMIT_PER_MINUTE
-    key_result = await check_rate_limit(redis, f"rl:key:{api_key.id}", key_limit)
-    if not key_result.allowed:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Rate limit exceeded for this API key",
-            headers={"Retry-After": str(key_result.retry_after)},
-        )
+    await enforce_rate_limits(redis, api_key, message.session_id, settings)
 
-    session_result = await check_rate_limit(
-        redis,
-        f"rl:sess:{api_key.id}:{message.session_id}",
-        settings.RATE_LIMIT_SESSION_PER_MINUTE,
-    )
-    if not session_result.allowed:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Rate limit exceeded for this session",
-            headers={"Retry-After": str(session_result.retry_after)},
-        )
+    agent = await resolve_agent_or_404(session, message.agent_id)
 
-    try:
-        agent_uuid = uuid.UUID(message.agent_id)
-    except ValueError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
-    try:
-        agent = await agent_service.get_agent(session, agent_uuid)
-    except agent_service.AgentNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
-
-    metadata = {**message.metadata, "app_id": str(api_key.id), "app_name": api_key.name}
+    metadata = build_job_metadata(message.metadata, api_key)
 
     job_id = await job_helpers.enqueue_chat_job(
         agent_id=str(agent.id),
