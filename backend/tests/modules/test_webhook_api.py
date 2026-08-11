@@ -194,6 +194,56 @@ async def test_happy_path_enqueues_and_returns_202(client, admin_auth_header, ap
     assert calls[0]["metadata"]["app_name"] == "Test App"
 
 
+async def test_history_absent_passes_none(client, admin_auth_header, api_key_header, monkeypatch):
+    domain = await _create_domain(client, admin_auth_header)
+    agent = await _create_agent(client, admin_auth_header, domain["id"])
+    calls = _patch_enqueue(monkeypatch)
+
+    resp = await client.post(
+        "/api/webhooks/generic",
+        json={"agent_id": agent["id"], "session_id": "sess-1", "message": "hello there"},
+        headers=api_key_header,
+    )
+    assert resp.status_code == 202, resp.text
+    assert calls[0]["history"] is None
+
+
+async def test_history_present_threaded_to_job_as_plain_dicts(
+    client, admin_auth_header, api_key_header, monkeypatch
+):
+    domain = await _create_domain(client, admin_auth_header)
+    agent = await _create_agent(client, admin_auth_header, domain["id"])
+    calls = _patch_enqueue(monkeypatch)
+
+    resp = await client.post(
+        "/api/webhooks/generic",
+        json={
+            "agent_id": agent["id"],
+            "session_id": "sess-1",
+            "message": "hello there",
+            "history": [
+                {"role": "user", "content": "Earlier question"},
+                {"role": "assistant", "content": "Earlier answer"},
+            ],
+        },
+        headers=api_key_header,
+    )
+    assert resp.status_code == 202, resp.text
+    assert calls[0]["history"] == [
+        {"role": "user", "content": "Earlier question"},
+        {"role": "assistant", "content": "Earlier answer"},
+    ]
+
+
+async def test_history_bad_shape_returns_422(client, admin_auth_header, api_key_header):
+    resp = await client.post(
+        "/api/webhooks/generic",
+        json={"agent_id": "a", "message": "hi", "history": [{"role": "system", "content": "x"}]},
+        headers=api_key_header,
+    )
+    assert resp.status_code == 422
+
+
 # ---- Rate limiting ----
 
 

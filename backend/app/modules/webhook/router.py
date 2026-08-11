@@ -64,6 +64,7 @@ async def receive_webhook(
         text=message.text,
         metadata=metadata,
         platform=platform,
+        history=[item.model_dump() for item in message.history] if message.history is not None else None,
     )
     return WebhookAck(job_id=job_id)
 

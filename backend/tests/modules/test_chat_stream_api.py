@@ -123,6 +123,7 @@ def _patch_enqueue(monkeypatch, fake_redis: FakeRedis):
         text: str,
         metadata: dict[str, Any],
         platform: str,
+        history: list[dict[str, Any]] | None = None,
     ) -> None:
         call = {
             "job_id": job_id,
@@ -131,6 +132,7 @@ def _patch_enqueue(monkeypatch, fake_redis: FakeRedis):
             "text": text,
             "metadata": metadata,
             "platform": platform,
+            "history": history,
         }
         enqueue_calls.append(call)
 
@@ -464,3 +466,97 @@ async def test_metadata_carries_app_identity(
     assert "app_name" in metadata
     assert metadata["app_name"] == "Test App"
     assert metadata["custom_key"] == "custom_value"
+
+
+# ---- Client-managed history ----
+
+
+async def test_history_absent_passes_none(client, admin_auth_header, api_key_header, monkeypatch):
+    domain = await _create_domain(client, admin_auth_header)
+    agent = await _create_agent(client, admin_auth_header, domain["id"])
+
+    fake_redis = _patch_fake_redis(monkeypatch)
+    enqueue_calls = _patch_enqueue(monkeypatch, fake_redis)
+
+    from app.modules.chat.service import sse_frame
+
+    async def _mock_relay(pubsub):
+        yield sse_frame({"type": "done", "reply": "ok", "session_id": "s", "iterations": 1, "stopped_on": "final_answer"})
+
+    monkeypatch.setattr("app.modules.chat.router.relay_job_events", _mock_relay)
+
+    resp = await client.post(
+        "/api/chat/stream",
+        json={"agent_id": agent["id"], "message": "hello"},
+        headers=api_key_header,
+    )
+    assert resp.status_code == 200
+    async for _ in resp.aiter_lines():
+        pass
+
+    assert len(enqueue_calls) == 1
+    assert enqueue_calls[0]["history"] is None
+
+
+async def test_history_present_threaded_to_job_as_plain_dicts(
+    client, admin_auth_header, api_key_header, monkeypatch
+):
+    domain = await _create_domain(client, admin_auth_header)
+    agent = await _create_agent(client, admin_auth_header, domain["id"])
+
+    fake_redis = _patch_fake_redis(monkeypatch)
+    enqueue_calls = _patch_enqueue(monkeypatch, fake_redis)
+
+    from app.modules.chat.service import sse_frame
+
+    async def _mock_relay(pubsub):
+        yield sse_frame({"type": "done", "reply": "ok", "session_id": "s", "iterations": 1, "stopped_on": "final_answer"})
+
+    monkeypatch.setattr("app.modules.chat.router.relay_job_events", _mock_relay)
+
+    resp = await client.post(
+        "/api/chat/stream",
+        json={
+            "agent_id": agent["id"],
+            "message": "hello",
+            "history": [
+                {"role": "user", "content": "Earlier question"},
+                {"role": "assistant", "content": "Earlier answer"},
+            ],
+        },
+        headers=api_key_header,
+    )
+    assert resp.status_code == 200
+    async for _ in resp.aiter_lines():
+        pass
+
+    assert len(enqueue_calls) == 1
+    assert enqueue_calls[0]["history"] == [
+        {"role": "user", "content": "Earlier question"},
+        {"role": "assistant", "content": "Earlier answer"},
+    ]
+
+
+async def test_history_bad_role_returns_422(client, admin_auth_header, api_key_header):
+    resp = await client.post(
+        "/api/chat/stream",
+        json={"agent_id": "a", "message": "hi", "history": [{"role": "system", "content": "x"}]},
+        headers=api_key_header,
+    )
+    assert resp.status_code == 422
+
+
+async def test_history_too_long_returns_422(client, admin_auth_header, api_key_header, monkeypatch):
+    fake_settings = type("S", (), {"MAX_CLIENT_HISTORY_MESSAGES": 2})()
+    monkeypatch.setattr("app.modules.chat.schemas.get_settings", lambda: fake_settings)
+
+    resp = await client.post(
+        "/api/chat/stream",
+        json={
+            "agent_id": "a",
+            "message": "hi",
+            "history": [{"role": "user", "content": str(i)} for i in range(3)],
+        },
+        headers=api_key_header,
+    )
+    assert resp.status_code == 422

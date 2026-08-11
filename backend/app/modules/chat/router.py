@@ -65,6 +65,7 @@ async def stream_chat(
         text=body.message,
         metadata=metadata,
         platform="generic",
+        history=[item.model_dump() for item in body.history] if body.history is not None else None,
     )
 
     async def event_generator():

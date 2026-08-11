@@ -16,8 +16,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.core.types import Message, Role
 from app.modules.conversation.models import ChatMessage
+from app.modules.conversation.schemas import HistoryItemIn
 
 _ROLE_MAP = {"user": Role.USER, "assistant": Role.ASSISTANT}
+
+
+def messages_from_history_items(items: list[HistoryItemIn]) -> list[Message]:
+    """Convert client-supplied history turns straight to agent ``Message``s.
+
+    The client-managed-history counterpart to ``load_history``: same
+    role mapping, but source is a caller-supplied list instead of the DB.
+    """
+    return [Message(role=_ROLE_MAP[item.role], content=item.content) for item in items]
 
 
 async def load_history(

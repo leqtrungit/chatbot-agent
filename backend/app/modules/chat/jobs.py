@@ -19,6 +19,7 @@ async def enqueue_chat_stream_job(
     text: str,
     metadata: dict[str, Any],
     platform: str,
+    history: list[dict[str, Any]] | None = None,
 ) -> None:
     """Enqueue a streaming chat job to be processed by the worker.
 
@@ -30,6 +31,8 @@ async def enqueue_chat_stream_job(
         text: The user's message.
         metadata: Additional metadata (will include app_id and app_name).
         platform: The platform identifier (e.g. "generic").
+        history: Client-managed history for this turn, if supplied (``None``
+            means server-managed — see ``app.channels.base.IncomingMessage``).
     """
     pool = await get_arq_pool()
     job = await pool.enqueue_job(
@@ -40,5 +43,6 @@ async def enqueue_chat_stream_job(
         text=text,
         metadata=metadata,
         platform=platform,
+        history=history,
     )
     assert job is not None  # enqueue_job only returns None on job-id collision

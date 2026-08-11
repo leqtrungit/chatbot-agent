@@ -357,6 +357,98 @@ async def test_process_chat_job_history_truncated_to_limit(session_maker, monkey
     assert last_call_messages[3].content == "Question 3"
 
 
+async def test_process_chat_job_client_managed_history_skips_db_load_and_persist(
+    session_maker, monkeypatch, mock_llm
+):
+    """When ``history`` is supplied, the worker must use it as-is and must not
+    touch ``chat_messages`` at all (neither load nor append)."""
+    agent_id = await _seed_agent(session_maker)
+
+    monkeypatch.setattr(tasks, "PgVectorKnowledgeSearcher", _FakeSearcher)
+    monkeypatch.setattr(tasks, "build_llm_provider", lambda agent, settings: mock_llm)
+
+    async def _fail_if_called(*args, **kwargs):
+        raise AssertionError("load_history must not be called for client-managed history")
+
+    monkeypatch.setattr(tasks, "load_history", _fail_if_called)
+
+    ctx = await _make_ctx(session_maker)
+
+    mock_llm.queue(LLMResponse(content="Answer", finish_reason="stop"))
+    result = await tasks.process_chat_job(
+        ctx,
+        agent_id=str(agent_id),
+        session_id="sess-client-managed",
+        text="New question",
+        metadata={},
+        platform="generic",
+        history=[
+            {"role": "user", "content": "Earlier question"},
+            {"role": "assistant", "content": "Earlier answer"},
+        ],
+    )
+
+    assert result["reply"] == "Answer"
+    call_messages = mock_llm.calls[0]["messages"]
+    # [system, client-user, client-assistant, new-user]
+    assert len(call_messages) == 4
+    assert call_messages[1].role == Role.USER
+    assert call_messages[1].content == "Earlier question"
+    assert call_messages[2].role == Role.ASSISTANT
+    assert call_messages[2].content == "Earlier answer"
+    assert call_messages[3].content == "New question"
+
+    async with session_maker() as session:
+        rows = list(
+            (
+                await session.execute(
+                    select(ChatMessage).where(
+                        ChatMessage.agent_id == agent_id, ChatMessage.session_id == "sess-client-managed"
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert rows == []
+
+
+async def test_process_chat_job_history_none_keeps_server_managed_behavior(
+    session_maker, monkeypatch, mock_llm
+):
+    """Regression: omitting ``history`` (the default) must behave exactly like
+    before — DB load + persist."""
+    agent_id = await _seed_agent(session_maker)
+    monkeypatch.setattr(tasks, "PgVectorKnowledgeSearcher", _FakeSearcher)
+    monkeypatch.setattr(tasks, "build_llm_provider", lambda agent, settings: mock_llm)
+
+    ctx = await _make_ctx(session_maker)
+
+    mock_llm.queue(LLMResponse(content="Answer", finish_reason="stop"))
+    await tasks.process_chat_job(
+        ctx,
+        agent_id=str(agent_id),
+        session_id="sess-server-managed",
+        text="Question",
+        metadata={},
+        platform="generic",
+    )
+
+    async with session_maker() as session:
+        rows = list(
+            (
+                await session.execute(
+                    select(ChatMessage).where(
+                        ChatMessage.agent_id == agent_id, ChatMessage.session_id == "sess-server-managed"
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert [r.role for r in rows] == ["user", "assistant"]
+
+
 async def test_process_chat_job_does_not_persist_when_agent_raises(session_maker, monkeypatch, mock_llm):
     agent_id = await _seed_agent(session_maker)
     monkeypatch.setattr(tasks, "PgVectorKnowledgeSearcher", _FakeSearcher)

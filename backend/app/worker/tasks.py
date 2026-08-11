@@ -28,7 +28,8 @@ from app.core.config import Settings, get_settings
 from app.modules.agent.models import Agent as AgentModel
 from app.modules.agent.service import get_agent
 from app.modules.analytics import service as analytics_service
-from app.modules.conversation.service import append_turn, load_history
+from app.modules.conversation.schemas import HistoryItemIn
+from app.modules.conversation.service import append_turn, load_history, messages_from_history_items
 from app.modules.document.pipeline.ingest import ingest_document
 from app.modules.knowledge.searcher import PgVectorKnowledgeSearcher
 from app.modules.mcp.client import build_mcp_tools
@@ -150,15 +151,27 @@ async def process_chat_job(
     text: str,
     metadata: dict[str, Any],
     platform: str,
+    history: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    """``history`` is the client-managed-history opt-in (see
+    ``app.channels.base.IncomingMessage.history``): ``None`` (the default,
+    matching every pre-existing caller) means server-managed — load from
+    and persist to ``chat_messages`` as before. A list means the client
+    owns history for this session: use it as-is and skip DB load/persist.
+    """
     session_maker: async_sessionmaker[AsyncSession] = ctx["session_maker"]
     embedding_provider: EmbeddingProvider = ctx["embedding_provider"]
     settings: Settings = ctx["settings"]
     job_id: str = ctx.get("job_id", "")
 
+    client_managed = history is not None
+
     async with session_maker() as session:
         agent_row = await get_agent(session, uuid.UUID(agent_id))
-        history = await load_history(session, agent_row.id, session_id, settings.CHAT_HISTORY_LIMIT)
+        if client_managed:
+            agent_history = messages_from_history_items([HistoryItemIn(**item) for item in history])
+        else:
+            agent_history = await load_history(session, agent_row.id, session_id, settings.CHAT_HISTORY_LIMIT)
 
     searcher = PgVectorKnowledgeSearcher(session_maker, embedding_provider, settings.EMBEDDING_MODEL)
 
@@ -169,7 +182,7 @@ async def process_chat_job(
     try:
         async with AsyncExitStack() as stack:
             agent = await build_agent(agent_row, settings=settings, searcher=searcher, stack=stack)
-            response = await agent.run(text, history=history)
+            response = await agent.run(text, history=agent_history)
         status_ = "success"
     except Exception as exc:
         error_message = str(exc)
@@ -188,8 +201,9 @@ async def process_chat_job(
             latency_ms=int((time.monotonic() - started) * 1000),
         )
 
-    async with session_maker() as session:
-        await append_turn(session, agent_row.id, session_id, text, response.content)
+    if not client_managed:
+        async with session_maker() as session:
+            await append_turn(session, agent_row.id, session_id, text, response.content)
 
     registry = get_channel_registry()
     try:
@@ -215,8 +229,12 @@ async def process_chat_job_stream(
     text: str,
     metadata: dict[str, Any],
     platform: str,
+    history: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Streaming version of process_chat_job: publishes token deltas to Redis pubsub."""
+    """Streaming version of process_chat_job: publishes token deltas to Redis pubsub.
+
+    ``history`` is the client-managed-history opt-in — see ``process_chat_job``.
+    """
     session_maker: async_sessionmaker[AsyncSession] = ctx["session_maker"]
     embedding_provider: EmbeddingProvider = ctx["embedding_provider"]
     settings: Settings = ctx["settings"]
@@ -225,9 +243,14 @@ async def process_chat_job_stream(
 
     channel = f"chat:job:{job_id}"
 
+    client_managed = history is not None
+
     async with session_maker() as session:
         agent_row = await get_agent(session, uuid.UUID(agent_id))
-        history = await load_history(session, agent_row.id, session_id, settings.CHAT_HISTORY_LIMIT)
+        if client_managed:
+            agent_history = messages_from_history_items([HistoryItemIn(**item) for item in history])
+        else:
+            agent_history = await load_history(session, agent_row.id, session_id, settings.CHAT_HISTORY_LIMIT)
 
     searcher = PgVectorKnowledgeSearcher(session_maker, embedding_provider, settings.EMBEDDING_MODEL)
 
@@ -239,7 +262,7 @@ async def process_chat_job_stream(
                 agent_row, settings=settings, searcher=searcher, stack=stack
             )
             response = None
-            async for event in agent.run_stream(text, history=history):
+            async for event in agent.run_stream(text, history=agent_history):
                 if event.type == "thinking":
                     await redis.publish(channel, json.dumps({"type": "thinking", "delta": event.thinking}))
                 elif event.type == "delta":
@@ -264,9 +287,10 @@ async def process_chat_job_stream(
         )
         logged = True
 
-        # Persist the turn
-        async with session_maker() as session:
-            await append_turn(session, agent_row.id, session_id, text, response.content)
+        # Persist the turn (server-managed sessions only)
+        if not client_managed:
+            async with session_maker() as session:
+                await append_turn(session, agent_row.id, session_id, text, response.content)
 
         # Send response via adapter if registered
         registry = get_channel_registry()
