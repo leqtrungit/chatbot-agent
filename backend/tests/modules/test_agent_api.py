@@ -156,8 +156,11 @@ async def test_get_update_delete_agent(client, admin_auth_header):
     resp = await client.delete(f"/api/agents/{agent_id}", headers=admin_auth_header)
     assert resp.status_code == 204
 
+    # Delete is a soft delete (is_active=False) — the row (and its history) stays
+    # visible to admins, matching ApiKey's revoked_at pattern.
     resp = await client.get(f"/api/agents/{agent_id}", headers=admin_auth_header)
-    assert resp.status_code == 404
+    assert resp.status_code == 200
+    assert resp.json()["is_active"] is False
 
 
 async def test_get_agent_not_found(client, admin_auth_header):

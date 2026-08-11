@@ -13,6 +13,9 @@ from sqlalchemy import select
 from app.agent.core.types import AgentResponse, AgentStreamEvent, LLMResponse, Message, Role, ToolCall
 from app.core.config import get_settings
 from app.modules.agent.models import Agent
+from app.modules.analytics.models import RequestLog
+from app.modules.apikey import service as apikey_service
+from app.modules.apikey.schemas import ApiKeyCreate
 from app.modules.conversation.models import ChatMessage
 from app.worker import tasks
 
@@ -59,6 +62,12 @@ async def _seed_agent(session_maker) -> uuid.UUID:
         session.add(agent)
         await session.commit()
         return agent.id
+
+
+async def _seed_api_key(session_maker, name="App") -> uuid.UUID:
+    async with session_maker() as session:
+        api_key, _raw = await apikey_service.create_api_key(session, ApiKeyCreate(name=name))
+        return api_key.id
 
 
 def _make_fake_session_maker():
@@ -356,6 +365,92 @@ async def test_process_chat_job_stream_persists_turn_and_reuses_history(session_
         "Second question",
         "Second answer",
     ]
+
+
+async def test_process_chat_job_stream_writes_request_log_on_success(session_maker, monkeypatch):
+    agent_id = await _seed_agent(session_maker)
+    api_key_id = await _seed_api_key(session_maker)
+    monkeypatch.setattr(tasks, "PgVectorKnowledgeSearcher", _FakeSearcher)
+
+    fake_redis = _FakeRedis()
+    ctx = await _make_ctx(session_maker=session_maker, redis=fake_redis)
+
+    fake_agent = _FakeAgent(
+        stream_chunks=[
+            AgentStreamEvent(
+                type="final",
+                response=AgentResponse(
+                    content="Answer",
+                    messages=[],
+                    iterations=1,
+                    stopped_on="final_answer",
+                    usage={"prompt_tokens": 8, "completion_tokens": 4},
+                ),
+            ),
+        ]
+    )
+
+    async def _fake_build_agent(*args, **kwargs):
+        return fake_agent
+
+    monkeypatch.setattr(tasks, "build_agent", _fake_build_agent)
+
+    await tasks.process_chat_job_stream(
+        ctx,
+        agent_id=str(agent_id),
+        session_id="sess-log-stream",
+        text="Hi",
+        metadata={"app_id": str(api_key_id), "app_name": "App"},
+        platform="generic",
+    )
+
+    async with session_maker() as session:
+        rows = list((await session.execute(select(RequestLog))).scalars().all())
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.status == "success"
+    assert row.api_key_id == api_key_id
+    assert row.agent_id == agent_id
+    assert row.prompt_tokens == 8
+    assert row.completion_tokens == 4
+
+
+async def test_process_chat_job_stream_writes_request_log_on_failure(session_maker, monkeypatch):
+    agent_id = await _seed_agent(session_maker)
+    api_key_id = await _seed_api_key(session_maker)
+    monkeypatch.setattr(tasks, "PgVectorKnowledgeSearcher", _FakeSearcher)
+
+    fake_redis = _FakeRedis()
+    ctx = await _make_ctx(session_maker=session_maker, redis=fake_redis)
+
+    class _StreamingExplodingAgent:
+        async def run_stream(self, text, history=None):
+            raise RuntimeError("stream boom")
+            yield  # pragma: no cover - unreachable, makes this an async generator
+
+    async def _fake_build_agent(*args, **kwargs):
+        return _StreamingExplodingAgent()
+
+    monkeypatch.setattr(tasks, "build_agent", _fake_build_agent)
+
+    with pytest.raises(RuntimeError, match="stream boom"):
+        await tasks.process_chat_job_stream(
+            ctx,
+            agent_id=str(agent_id),
+            session_id="sess-log-stream-err",
+            text="Hi",
+            metadata={"app_id": str(api_key_id), "app_name": "App"},
+            platform="generic",
+        )
+
+    async with session_maker() as session:
+        rows = list((await session.execute(select(RequestLog))).scalars().all())
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.status == "error"
+    assert row.error_message is not None
 
 
 async def test_process_chat_job_stream_publishes_error_and_reraises(monkeypatch):

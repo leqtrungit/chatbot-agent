@@ -8,6 +8,7 @@ import {
   BotIcon,
   FolderKanban,
   KeyRound,
+  LayoutDashboard,
   LogOut,
   MessageSquare,
   MoonIcon,
@@ -31,6 +32,7 @@ import { EmberMark } from "@/components/ember-mark";
 import { PlaygroundDrawer } from "@/components/playground-drawer";
 
 const NAV_ITEMS = [
+  { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/domains", label: "Domains", icon: FolderKanban },
   { href: "/agents", label: "Agents", icon: BotIcon },
   { href: "/mcp-servers", label: "MCP Servers", icon: PlugZap },

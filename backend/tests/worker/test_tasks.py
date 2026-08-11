@@ -12,6 +12,9 @@ from app.agent.providers.ollama import OllamaProvider
 from app.agent.providers.openai_compat import OpenAICompatProvider
 from app.core.config import get_settings
 from app.modules.agent.models import Agent
+from app.modules.analytics.models import RequestLog
+from app.modules.apikey import service as apikey_service
+from app.modules.apikey.schemas import ApiKeyCreate
 from app.modules.conversation.models import ChatMessage
 from app.modules.domain.models import Domain
 from app.worker import tasks
@@ -392,6 +395,117 @@ async def test_process_chat_job_does_not_persist_when_agent_raises(session_maker
             .scalars()
             .all()
         )
+    assert rows == []
+
+
+async def _seed_api_key(session_maker, name="App") -> uuid.UUID:
+    async with session_maker() as session:
+        api_key, _raw = await apikey_service.create_api_key(session, ApiKeyCreate(name=name))
+        return api_key.id
+
+
+async def test_process_chat_job_writes_request_log_on_success(session_maker, monkeypatch, mock_llm):
+    agent_id = await _seed_agent(session_maker)
+    api_key_id = await _seed_api_key(session_maker)
+    monkeypatch.setattr(tasks, "PgVectorKnowledgeSearcher", _FakeSearcher)
+    monkeypatch.setattr(tasks, "build_llm_provider", lambda agent, settings: mock_llm)
+
+    mock_llm.queue(
+        LLMResponse(content="Answer", finish_reason="stop", usage={"prompt_tokens": 12, "completion_tokens": 7})
+    )
+
+    ctx = await _make_ctx(session_maker)
+    ctx["job_id"] = "job-success-1"
+
+    await tasks.process_chat_job(
+        ctx,
+        agent_id=str(agent_id),
+        session_id="sess-log",
+        text="Hi",
+        metadata={"app_id": str(api_key_id), "app_name": "App"},
+        platform="generic",
+    )
+
+    async with session_maker() as session:
+        rows = list((await session.execute(select(RequestLog))).scalars().all())
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.job_id == "job-success-1"
+    assert row.api_key_id == api_key_id
+    assert row.agent_id == agent_id
+    assert row.session_id == "sess-log"
+    assert row.platform == "generic"
+    assert row.status == "success"
+    assert row.error_message is None
+    assert row.prompt_tokens == 12
+    assert row.completion_tokens == 7
+    assert row.total_tokens == 19
+    assert row.iterations == 1
+    assert row.stopped_on == "final_answer"
+    assert row.latency_ms >= 0
+
+
+async def test_process_chat_job_writes_request_log_on_failure(session_maker, monkeypatch, mock_llm):
+    agent_id = await _seed_agent(session_maker)
+    api_key_id = await _seed_api_key(session_maker)
+    monkeypatch.setattr(tasks, "PgVectorKnowledgeSearcher", _FakeSearcher)
+    monkeypatch.setattr(tasks, "build_llm_provider", lambda agent, settings: mock_llm)
+
+    class _ExplodingAgent:
+        async def run(self, text, history=None):
+            raise RuntimeError("boom" * 200)
+
+    async def _fake_build_agent(*args, **kwargs):
+        return _ExplodingAgent()
+
+    monkeypatch.setattr(tasks, "build_agent", _fake_build_agent)
+
+    ctx = await _make_ctx(session_maker)
+    ctx["job_id"] = "job-fail-1"
+
+    with pytest.raises(RuntimeError):
+        await tasks.process_chat_job(
+            ctx,
+            agent_id=str(agent_id),
+            session_id="sess-log-err",
+            text="Hi",
+            metadata={"app_id": str(api_key_id), "app_name": "App"},
+            platform="generic",
+        )
+
+    async with session_maker() as session:
+        rows = list((await session.execute(select(RequestLog))).scalars().all())
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.status == "error"
+    assert row.error_message is not None
+    assert len(row.error_message) == 500
+    assert row.prompt_tokens == 0
+    assert row.completion_tokens == 0
+
+
+async def test_process_chat_job_skips_request_log_without_app_id(session_maker, monkeypatch, mock_llm):
+    agent_id = await _seed_agent(session_maker)
+    monkeypatch.setattr(tasks, "PgVectorKnowledgeSearcher", _FakeSearcher)
+    monkeypatch.setattr(tasks, "build_llm_provider", lambda agent, settings: mock_llm)
+
+    mock_llm.queue(LLMResponse(content="Answer", finish_reason="stop"))
+
+    ctx = await _make_ctx(session_maker)
+
+    await tasks.process_chat_job(
+        ctx,
+        agent_id=str(agent_id),
+        session_id="sess-no-key",
+        text="Hi",
+        metadata={},
+        platform="generic",
+    )
+
+    async with session_maker() as session:
+        rows = list((await session.execute(select(RequestLog))).scalars().all())
     assert rows == []
 
 

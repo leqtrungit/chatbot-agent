@@ -80,6 +80,7 @@ class AgentResponse(BaseModel):
     messages: list[Message] = Field(default_factory=list)
     iterations: int = 0
     stopped_on: str = "final_answer"  # final_answer | max_iterations | error
+    usage: dict[str, int] = Field(default_factory=dict)  # summed across every LLM call in the run
 
 
 class AgentStreamEvent(BaseModel):

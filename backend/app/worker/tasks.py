@@ -9,6 +9,7 @@ can monkeypatch them.
 from __future__ import annotations
 
 import json
+import time
 import uuid
 from contextlib import AsyncExitStack
 from typing import Any
@@ -16,6 +17,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.agent import AgentBuilder, KnowledgeSearchTool
+from app.agent.core.types import AgentResponse
 from app.agent.providers.base import EmbeddingProvider, LLMProvider
 from app.agent.providers.ollama import OllamaEmbeddingProvider, OllamaProvider
 from app.agent.providers.openai_compat import OpenAICompatProvider
@@ -25,10 +27,52 @@ from app.channels.registry import ChannelNotRegisteredError, get_channel_registr
 from app.core.config import Settings, get_settings
 from app.modules.agent.models import Agent as AgentModel
 from app.modules.agent.service import get_agent
+from app.modules.analytics import service as analytics_service
 from app.modules.conversation.service import append_turn, load_history
 from app.modules.document.pipeline.ingest import ingest_document
 from app.modules.knowledge.searcher import PgVectorKnowledgeSearcher
 from app.modules.mcp.client import build_mcp_tools
+
+
+async def _write_request_log(
+    session_maker: async_sessionmaker[AsyncSession],
+    *,
+    job_id: str,
+    metadata: dict[str, Any],
+    agent_row: AgentModel,
+    session_id: str,
+    platform: str,
+    response: AgentResponse | None,
+    status: str,
+    error_message: str | None,
+    latency_ms: int,
+) -> None:
+    """Write one ``RequestLog`` row for this job, if the caller was identified
+    by an API key (``metadata["app_id"]``, stamped by
+    ``apikey.deps.build_job_metadata`` for every job-enqueueing endpoint).
+    Silently skipped otherwise (e.g. internal/test invocations with no
+    caller identity) rather than failing the whole job over a metrics row.
+    """
+    app_id = metadata.get("app_id")
+    if app_id is None:
+        return
+    async with session_maker() as session:
+        await analytics_service.record_request(
+            session,
+            job_id=job_id,
+            api_key_id=uuid.UUID(app_id),
+            agent_id=agent_row.id,
+            session_id=session_id,
+            platform=platform,
+            model_name=agent_row.model_name,
+            provider=agent_row.provider,
+            usage=(response.usage if response else {}),
+            iterations=(response.iterations if response else 0),
+            stopped_on=(response.stopped_on if response else None),
+            status=status,
+            error_message=error_message,
+            latency_ms=latency_ms,
+        )
 
 
 def build_llm_provider(agent: AgentModel, settings: Settings) -> LLMProvider:
@@ -110,15 +154,39 @@ async def process_chat_job(
     session_maker: async_sessionmaker[AsyncSession] = ctx["session_maker"]
     embedding_provider: EmbeddingProvider = ctx["embedding_provider"]
     settings: Settings = ctx["settings"]
+    job_id: str = ctx.get("job_id", "")
 
     async with session_maker() as session:
         agent_row = await get_agent(session, uuid.UUID(agent_id))
         history = await load_history(session, agent_row.id, session_id, settings.CHAT_HISTORY_LIMIT)
 
     searcher = PgVectorKnowledgeSearcher(session_maker, embedding_provider, settings.EMBEDDING_MODEL)
-    async with AsyncExitStack() as stack:
-        agent = await build_agent(agent_row, settings=settings, searcher=searcher, stack=stack)
-        response = await agent.run(text, history=history)
+
+    started = time.monotonic()
+    response: AgentResponse | None = None
+    status_ = "error"
+    error_message: str | None = None
+    try:
+        async with AsyncExitStack() as stack:
+            agent = await build_agent(agent_row, settings=settings, searcher=searcher, stack=stack)
+            response = await agent.run(text, history=history)
+        status_ = "success"
+    except Exception as exc:
+        error_message = str(exc)
+        raise
+    finally:
+        await _write_request_log(
+            session_maker,
+            job_id=job_id,
+            metadata=metadata,
+            agent_row=agent_row,
+            session_id=session_id,
+            platform=platform,
+            response=response,
+            status=status_,
+            error_message=error_message,
+            latency_ms=int((time.monotonic() - started) * 1000),
+        )
 
     async with session_maker() as session:
         await append_turn(session, agent_row.id, session_id, text, response.content)
@@ -163,6 +231,8 @@ async def process_chat_job_stream(
 
     searcher = PgVectorKnowledgeSearcher(session_maker, embedding_provider, settings.EMBEDDING_MODEL)
 
+    started = time.monotonic()
+    logged = False
     try:
         async with AsyncExitStack() as stack:
             agent = await build_agent(
@@ -176,6 +246,23 @@ async def process_chat_job_stream(
                     await redis.publish(channel, json.dumps({"type": "token", "delta": event.delta}))
                 elif event.type == "final":
                     response = event.response
+
+        # The LLM call succeeded — log now (before persistence/delivery), so
+        # a downstream failure below doesn't retroactively mark a successful
+        # LLM call as an error in the log.
+        await _write_request_log(
+            session_maker,
+            job_id=job_id,
+            metadata=metadata,
+            agent_row=agent_row,
+            session_id=session_id,
+            platform=platform,
+            response=response,
+            status="success",
+            error_message=None,
+            latency_ms=int((time.monotonic() - started) * 1000),
+        )
+        logged = True
 
         # Persist the turn
         async with session_maker() as session:
@@ -209,5 +296,18 @@ async def process_chat_job_stream(
             "stopped_on": response.stopped_on,
         }
     except Exception as exc:
+        if not logged:
+            await _write_request_log(
+                session_maker,
+                job_id=job_id,
+                metadata=metadata,
+                agent_row=agent_row,
+                session_id=session_id,
+                platform=platform,
+                response=None,
+                status="error",
+                error_message=str(exc),
+                latency_ms=int((time.monotonic() - started) * 1000),
+            )
         await redis.publish(channel, json.dumps({"type": "error", "message": str(exc)}))
         raise

@@ -159,3 +159,34 @@ export interface CreateApiKeyResponse {
   name: string;
   key: string;
 }
+
+// ---- Analytics ----
+
+export type AnalyticsRange = "24h" | "7d" | "30d";
+export type BreakdownBy = "api_key" | "agent" | "model" | "status";
+
+export interface UsageSummary {
+  total_requests: number;
+  success_requests: number;
+  error_requests: number;
+  error_rate: number;
+  total_prompt_tokens: number;
+  total_completion_tokens: number;
+  total_tokens: number;
+  avg_latency_ms: number;
+}
+
+export interface TimeseriesPoint {
+  bucket: string;
+  requests: number;
+  total_tokens: number;
+  error_count: number;
+}
+
+export interface BreakdownRow {
+  key: string;
+  key_id?: string | null;
+  requests: number;
+  total_tokens: number;
+  error_count: number;
+}

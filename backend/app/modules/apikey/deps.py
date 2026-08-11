@@ -44,9 +44,12 @@ async def resolve_agent_or_404(session: AsyncSession, agent_id: str) -> Agent:
     except ValueError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
     try:
-        return await agent_service.get_agent(session, agent_uuid)
+        agent = await agent_service.get_agent(session, agent_uuid)
     except agent_service.AgentNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+    if not agent.is_active:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+    return agent
 
 
 async def enforce_rate_limits(
