@@ -140,3 +140,45 @@ def test_with_max_iterations(mock_llm):
         AgentBuilder().with_llm(mock_llm).with_model("m").with_max_iterations(3).build()
     )
     assert agent.max_iterations == 3
+
+
+def test_tool_prompt_fragment_appended_to_system_prompt(mock_llm):
+    tool = RecordingTool(name="cited", prompt_fragment="Cite your sources.")
+    agent = (
+        AgentBuilder()
+        .with_llm(mock_llm)
+        .with_model("m")
+        .with_system_prompt("Base prompt.")
+        .add_tool(tool)
+        .build()
+    )
+    assert "Base prompt." in agent.system_prompt
+    assert "Cite your sources." in agent.system_prompt
+
+
+def test_tool_with_default_empty_fragment_changes_nothing(mock_llm):
+    tool = RecordingTool(name="plain")
+    agent = (
+        AgentBuilder()
+        .with_llm(mock_llm)
+        .with_model("m")
+        .with_system_prompt("Base prompt.")
+        .add_tool(tool)
+        .build()
+    )
+    assert agent.system_prompt == "Base prompt."
+
+
+def test_duplicate_tool_prompt_fragments_contribute_once(mock_llm):
+    tool1 = RecordingTool(name="a", prompt_fragment="Same fragment.")
+    tool2 = RecordingTool(name="b", prompt_fragment="Same fragment.")
+    agent = (
+        AgentBuilder()
+        .with_llm(mock_llm)
+        .with_model("m")
+        .with_system_prompt("Base prompt.")
+        .add_tool(tool1)
+        .add_tool(tool2)
+        .build()
+    )
+    assert agent.system_prompt.count("Same fragment.") == 1

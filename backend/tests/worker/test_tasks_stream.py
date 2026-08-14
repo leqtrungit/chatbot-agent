@@ -10,7 +10,7 @@ import pytest
 
 from sqlalchemy import select
 
-from app.agent.core.types import AgentResponse, AgentStreamEvent, LLMResponse, Message, Role, ToolCall
+from app.agent.core.types import AgentResponse, AgentStreamEvent, Citation, LLMResponse, Message, Role, ToolCall
 from app.core.config import get_settings
 from app.modules.agent.models import Agent
 from app.modules.analytics.models import RequestLog
@@ -134,7 +134,7 @@ def _make_fake_load_history(history):
 
 def _make_fake_append_turn():
     """Create a fake append_turn that does nothing (for tests that don't verify persistence)."""
-    async def fake_append_turn(session, agent_uuid, session_id, text, content):
+    async def fake_append_turn(session, agent_uuid, session_id, text, content, *, citations=None):
         pass
     return fake_append_turn
 
@@ -187,6 +187,7 @@ async def test_process_chat_job_stream_publishes_tokens_then_done(monkeypatch):
             "session_id": "sess-1",
             "iterations": 1,
             "stopped_on": "final_answer",
+            "citations": [],
         },
     )
 
@@ -196,6 +197,7 @@ async def test_process_chat_job_stream_publishes_tokens_then_done(monkeypatch):
         "session_id": "sess-1",
         "iterations": 1,
         "stopped_on": "final_answer",
+        "citations": [],
     }
 
 
@@ -427,6 +429,77 @@ async def test_process_chat_job_stream_persists_turn_and_reuses_history(session_
         "Second question",
         "Second answer",
     ]
+
+
+async def test_process_chat_job_stream_done_payload_and_persisted_row_carry_citations(
+    session_maker, monkeypatch
+):
+    """Citations from the final AgentResponse must appear in the 'done'
+    payload, the return dict, and the persisted assistant ChatMessage row."""
+    agent_id = await _seed_agent(session_maker)
+    monkeypatch.setattr(tasks, "PgVectorKnowledgeSearcher", _FakeSearcher)
+
+    fake_redis = _FakeRedis()
+    ctx = await _make_ctx(session_maker=session_maker, redis=fake_redis)
+
+    citation = Citation(
+        marker=1,
+        source_id="doc-1:0",
+        title="handbook.pdf",
+        snippet="We are open 9-5.",
+        score=0.87,
+        metadata={"document_id": "doc-1", "chunk_index": 0, "filename": "handbook.pdf"},
+    )
+    fake_agent = _FakeAgent(
+        stream_chunks=[
+            AgentStreamEvent(
+                type="final",
+                response=AgentResponse(
+                    content="We are open 9-5. [1]",
+                    messages=[],
+                    iterations=1,
+                    stopped_on="final_answer",
+                    citations=[citation],
+                ),
+            ),
+        ]
+    )
+
+    async def _fake_build_agent(*args, **kwargs):
+        return fake_agent
+
+    monkeypatch.setattr(tasks, "build_agent", _fake_build_agent)
+
+    result = await tasks.process_chat_job_stream(
+        ctx,
+        agent_id=str(agent_id),
+        session_id="sess-cit-stream",
+        text="What are your hours?",
+        metadata={},
+        platform="generic",
+    )
+
+    expected_citations = [citation.model_dump()]
+    assert result["citations"] == expected_citations
+
+    done_frame = fake_redis.published[-1]
+    assert done_frame[1]["type"] == "done"
+    assert done_frame[1]["citations"] == expected_citations
+
+    async with session_maker() as session:
+        rows = list(
+            (
+                await session.execute(
+                    select(ChatMessage).where(
+                        ChatMessage.agent_id == agent_id, ChatMessage.session_id == "sess-cit-stream"
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assistant_row = next(r for r in rows if r.role == "assistant")
+    assert assistant_row.citations == expected_citations
 
 
 async def test_process_chat_job_stream_writes_request_log_on_success(session_maker, monkeypatch):

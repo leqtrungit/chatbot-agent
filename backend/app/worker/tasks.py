@@ -201,9 +201,11 @@ async def process_chat_job(
             latency_ms=int((time.monotonic() - started) * 1000),
         )
 
+    citations = [c.model_dump() for c in response.citations]
+
     if not client_managed:
         async with session_maker() as session:
-            await append_turn(session, agent_row.id, session_id, text, response.content)
+            await append_turn(session, agent_row.id, session_id, text, response.content, citations=citations)
 
     registry = get_channel_registry()
     try:
@@ -211,13 +213,16 @@ async def process_chat_job(
     except ChannelNotRegisteredError:
         adapter = None
     if adapter is not None:
-        await adapter.send_response(OutgoingMessage(session_id=session_id, text=response.content, metadata=metadata))
+        await adapter.send_response(
+            OutgoingMessage(session_id=session_id, text=response.content, metadata=metadata, citations=citations)
+        )
 
     return {
         "reply": response.content,
         "session_id": session_id,
         "iterations": response.iterations,
         "stopped_on": response.stopped_on,
+        "citations": citations,
     }
 
 
@@ -287,10 +292,12 @@ async def process_chat_job_stream(
         )
         logged = True
 
+        citations = [c.model_dump() for c in response.citations]
+
         # Persist the turn (server-managed sessions only)
         if not client_managed:
             async with session_maker() as session:
-                await append_turn(session, agent_row.id, session_id, text, response.content)
+                await append_turn(session, agent_row.id, session_id, text, response.content, citations=citations)
 
         # Send response via adapter if registered
         registry = get_channel_registry()
@@ -299,7 +306,9 @@ async def process_chat_job_stream(
         except ChannelNotRegisteredError:
             adapter = None
         if adapter is not None:
-            await adapter.send_response(OutgoingMessage(session_id=session_id, text=response.content, metadata=metadata))
+            await adapter.send_response(
+                OutgoingMessage(session_id=session_id, text=response.content, metadata=metadata, citations=citations)
+            )
 
         # Publish done message
         await redis.publish(
@@ -310,6 +319,7 @@ async def process_chat_job_stream(
                 "session_id": session_id,
                 "iterations": response.iterations,
                 "stopped_on": response.stopped_on,
+                "citations": citations,
             }),
         )
 
@@ -318,6 +328,7 @@ async def process_chat_job_stream(
             "session_id": session_id,
             "iterations": response.iterations,
             "stopped_on": response.stopped_on,
+            "citations": citations,
         }
     except Exception as exc:
         if not logged:

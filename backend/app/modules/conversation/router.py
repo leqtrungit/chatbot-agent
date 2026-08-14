@@ -41,7 +41,9 @@ async def list_conversation_messages(
 
     return ConversationMessagesRead(
         messages=[
-            ChatMessageRead(role=row.role, content=row.content, created_at=row.created_at)
+            ChatMessageRead(
+                role=row.role, content=row.content, created_at=row.created_at, citations=row.citations
+            )
             for row in rows
         ]
     )

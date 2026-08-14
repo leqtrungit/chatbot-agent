@@ -33,6 +33,7 @@ class OutgoingMessage(BaseModel):
     session_id: str
     text: str
     metadata: dict[str, Any] = Field(default_factory=dict)
+    citations: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ChannelAdapter(ABC):

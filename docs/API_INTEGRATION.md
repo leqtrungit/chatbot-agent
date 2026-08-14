@@ -138,10 +138,31 @@ curl -X POST https://<host>/api/webhooks/generic \
 }
 ```
 
-- Khi `status = "complete"`: `result` = `{"reply": "...", "session_id": "...", "iterations": <int>, "stopped_on": "<string>"}`.
+- Khi `status = "complete"`: `result` = `{"reply": "...", "session_id": "...", "iterations": <int>, "stopped_on": "<string>", "citations": [...]}`.
 - Khi `status = "failed"`: `result` = `{"error": "<thông điệp lỗi>"}`.
 - Khi `status` là `queued`/`in_progress`: `result = null`.
 - Job không tồn tại (đã hết hạn khỏi Redis hoặc `job_id` sai) → HTTP `404 Not Found`, `{"detail": "Job not found"}` (không phải `status: "not_found"` trong body — router chặn trước và raise 404).
+
+**Ví dụ `result` khi hoàn tất, có trích dẫn**
+```json
+{
+  "reply": "Chính sách đổi trả cho phép hoàn tiền trong 30 ngày [1].",
+  "session_id": "user-42-session-1",
+  "iterations": 2,
+  "stopped_on": "final_answer",
+  "citations": [
+    {
+      "marker": 1,
+      "source_id": "3f9a1c2e-...",
+      "title": "chinh-sach-doi-tra.pdf",
+      "snippet": "Khách hàng có thể yêu cầu hoàn tiền trong vòng 30 ngày kể từ ngày mua...",
+      "score": 0.812,
+      "metadata": {}
+    }
+  ]
+}
+```
+Xem mục 3.6 để biết chi tiết cấu trúc `Citation`.
 
 **Ví dụ curl**
 ```bash
@@ -186,7 +207,7 @@ Content-Type: application/json
 | `queued` | Ngay khi backend nhận request, trước khi worker chạy | `job_id` |
 | `thinking` | Nếu model phát ra nội dung "suy nghĩ" (tuỳ provider) | `delta` |
 | `token` | Mỗi phần văn bản trả lời được sinh ra | `delta` |
-| `done` | Kết thúc thành công | `reply`, `session_id`, `iterations`, `stopped_on` |
+| `done` | Kết thúc thành công | `reply`, `session_id`, `iterations`, `stopped_on`, `citations` |
 | `error` | Có lỗi trong lúc xử lý | `message` |
 
 Stream dừng lại sau khi nhận `done` hoặc `error` (đây là các message "terminal" — server tự đóng kết nối).
@@ -213,13 +234,13 @@ Cho phép client tự hiển thị lại các lượt hội thoại trước đ�
 ```json
 {
   "messages": [
-    {"role": "user", "content": "Xin chào", "created_at": "2026-08-11T10:00:00Z"},
-    {"role": "assistant", "content": "Chào bạn, tôi có thể giúp gì?", "created_at": "2026-08-11T10:00:02Z"}
+    {"role": "user", "content": "Xin chào", "created_at": "2026-08-11T10:00:00Z", "citations": null},
+    {"role": "assistant", "content": "Chào bạn, tôi có thể giúp gì?", "created_at": "2026-08-11T10:00:02Z", "citations": null}
   ]
 }
 ```
 
-`role` chỉ nhận `user` hoặc `assistant`.
+`role` chỉ nhận `user` hoặc `assistant`. `citations` (`Citation[] | null`) chỉ khác `null` trên tin nhắn `assistant` từng trích dẫn nguồn — tin nhắn `user` luôn có `citations: null`. Xem mục 3.6.
 
 **Ví dụ curl**
 ```bash
@@ -234,6 +255,24 @@ curl "https://<host>/api/conversations/6f1b0e2a-.../user-42-session-1/messages?l
 ### 3.5 Về "đẩy" phản hồi ngược lại (push)
 
 `ChannelAdapter.send_response()` hiện là **no-op** cho mọi adapter đã có trong repo (kể cả `generic`) — kênh nhận kết quả duy nhất hiện nay là polling `GET /api/jobs/{job_id}` hoặc SSE (`/api/chat/stream`). Nếu đối tác cần backend chủ động gọi ngược webhook của họ khi có kết quả, đây là điểm mở rộng (`send_response`) nhưng **chưa được triển khai cho bất kỳ platform nào** — cần xác nhận với đội core nếu có nhu cầu này.
+
+### 3.6 Đối tượng `Citation` (trích dẫn nguồn)
+
+Khi agent bật `enable_knowledge_search` và trả lời có trích dẫn nguồn bằng ký hiệu `[n]` ngay trong văn bản trả lời, các nguồn được trích dẫn sẽ đi kèm dưới dạng mảng `citations` — xuất hiện ở cả ba nơi: `result.citations` (mục 3.2), sự kiện `done` của SSE (mục 3.3), và trường `citations` trên tin nhắn `assistant` khi đọc lại lịch sử hội thoại (mục 3.4).
+
+| Field | Type | Ghi chú |
+|---|---|---|
+| `marker` | int | Số `n` tương ứng với ký hiệu `[n]` mà agent chèn trong văn bản trả lời |
+| `source_id` | string | ID của chunk/tài liệu nguồn |
+| `title` | string | Tên file tài liệu nguồn |
+| `snippet` | string | Tối đa 300 ký tự trích từ nội dung chunk |
+| `score` | number \| null | Điểm liên quan (cosine similarity) từ knowledge search, có thể `null` |
+| `metadata` | object | Metadata tuỳ theo tài liệu/chunk |
+
+**Lưu ý quan trọng**:
+- Mảng `citations` chỉ chứa những nguồn mà agent **thực sự trích dẫn** qua `[n]` trong câu trả lời — không phải toàn bộ kết quả `knowledge_search` đã truy vấn. Thứ tự trong mảng là thứ tự xuất hiện lần đầu của `[n]` trong văn bản.
+- Có thể là mảng rỗng `[]` (agent không trích dẫn nguồn nào, kể cả khi có gọi `knowledge_search`).
+- Ký hiệu `[n]` được giữ nguyên trong văn bản trả lời (`reply`/`content`) — đối tác tự render liên kết giữa `[n]` và phần tử tương ứng trong `citations` nếu cần.
 
 ---
 

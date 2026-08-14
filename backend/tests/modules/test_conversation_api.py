@@ -72,6 +72,46 @@ async def test_returns_messages_in_chronological_order(
     ]
 
 
+async def test_returns_citations_for_assistant_message_and_null_for_user(
+    client, admin_auth_header, api_key_header, db_session
+):
+    domain = await _create_domain(client, admin_auth_header)
+    agent = await _create_agent(client, admin_auth_header, domain["id"])
+    agent_uuid = uuid.UUID(agent["id"])
+
+    citations = [
+        {
+            "marker": 1,
+            "source_id": "doc-1:0",
+            "title": "handbook.pdf",
+            "snippet": "We are open 9-5.",
+            "score": 0.9,
+            "metadata": {"document_id": "doc-1", "chunk_index": 0, "filename": "handbook.pdf"},
+        }
+    ]
+    await conversation_service.append_turn(
+        db_session,
+        agent_uuid,
+        "sess-cit",
+        "What are your hours?",
+        "We are open 9-5. [1]",
+        citations=citations,
+    )
+
+    resp = await client.get(
+        f"/api/conversations/{agent['id']}/sess-cit/messages",
+        headers=api_key_header,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert len(body["messages"]) == 2
+    user_msg, assistant_msg = body["messages"]
+    assert user_msg["role"] == "user"
+    assert user_msg["citations"] is None
+    assert assistant_msg["role"] == "assistant"
+    assert assistant_msg["citations"] == citations
+
+
 async def test_only_returns_messages_for_requested_session(
     client, admin_auth_header, api_key_header, db_session
 ):

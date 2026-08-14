@@ -10,6 +10,7 @@ from sqlalchemy import select
 from app.agent.core.types import LLMResponse, Role, ToolCall
 from app.agent.providers.ollama import OllamaProvider
 from app.agent.providers.openai_compat import OpenAICompatProvider
+from app.agent.tools.knowledge_search import KnowledgeHit
 from app.core.config import get_settings
 from app.modules.agent.models import Agent
 from app.modules.analytics.models import RequestLog
@@ -107,6 +108,7 @@ async def test_process_chat_job_runs_agent_and_scopes_search(
         "session_id": "sess-1",
         "iterations": 2,
         "stopped_on": "final_answer",
+        "citations": [],
     }
     assert len(mock_llm.calls) == 2
 
@@ -115,6 +117,72 @@ async def test_process_chat_job_runs_agent_and_scopes_search(
     assert len(searcher.calls) == 1
     assert searcher.calls[0]["domain_id"] == str(domain_id)
     assert searcher.calls[0]["query"] == "hours"
+
+
+class _FakeSearcherWithHits:
+    """Stand-in for PgVectorKnowledgeSearcher that returns a scripted hit,
+    so a real Citation gets minted by KnowledgeSearchTool."""
+
+    def __init__(self, session_maker: Any, embedding_provider: Any, embedding_model: str):
+        pass
+
+    async def search(self, query: str, domain_id: str, limit: int):
+        return [
+            KnowledgeHit(
+                content="We are open 9-5, Monday through Friday.",
+                score=0.87,
+                metadata={"document_id": "doc-1", "chunk_index": 0, "filename": "handbook.pdf"},
+            )
+        ]
+
+
+async def test_process_chat_job_returns_and_persists_citations(session_maker, monkeypatch, mock_llm):
+    domain_id = await _seed_domain(session_maker)
+    agent_id = await _seed_agent(session_maker, domain_ids=[domain_id])
+
+    monkeypatch.setattr(tasks, "PgVectorKnowledgeSearcher", _FakeSearcherWithHits)
+    monkeypatch.setattr(tasks, "build_llm_provider", lambda agent, settings: mock_llm)
+
+    mock_llm.queue(
+        LLMResponse(
+            content="",
+            tool_calls=[ToolCall(id="call_0", name="knowledge_search", arguments={"query": "hours"})],
+        )
+    )
+    mock_llm.queue(LLMResponse(content="We are open 9-5. [1]", finish_reason="stop"))
+
+    ctx = await _make_ctx(session_maker)
+
+    result = await tasks.process_chat_job(
+        ctx,
+        agent_id=str(agent_id),
+        session_id="sess-cit",
+        text="What are your hours?",
+        metadata={},
+        platform="generic",
+    )
+
+    assert len(result["citations"]) == 1
+    citation = result["citations"][0]
+    assert citation["marker"] == 1
+    assert citation["title"] == "handbook.pdf"
+
+    async with session_maker() as session:
+        rows = list(
+            (
+                await session.execute(
+                    select(ChatMessage).where(
+                        ChatMessage.agent_id == agent_id, ChatMessage.session_id == "sess-cit"
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    user_row = next(r for r in rows if r.role == "user")
+    assistant_row = next(r for r in rows if r.role == "assistant")
+    assert user_row.citations is None
+    assert assistant_row.citations == result["citations"]
 
 
 async def test_process_chat_job_uses_agent_system_prompt_verbatim(session_maker, monkeypatch, mock_llm):

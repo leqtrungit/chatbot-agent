@@ -9,11 +9,13 @@ constructor injection (see :class:`app.agent.core.builder.AgentBuilder`).
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any, AsyncIterator
 
 from app.agent.core.types import (
     AgentResponse,
     AgentStreamEvent,
+    Citation,
     LLMResponse,
     Message,
     ModelParams,
@@ -23,11 +25,35 @@ from app.agent.core.types import (
     ToolResult,
 )
 from app.agent.providers.base import LLMProvider
-from app.agent.tools.base import Tool
+from app.agent.tools.base import Tool, ToolOutput
 
 _MAX_ITERATIONS_FALLBACK = (
     "I wasn't able to reach a final answer within the allotted number of steps."
 )
+
+_MARKER_RE = re.compile(r"\[(\d+(?:\s*,\s*\d+)*)\]")
+
+
+def _cited_from(text: str, pool: dict[int, Citation]) -> list[Citation]:
+    """Extract, in order of first appearance, the citations referenced by ``text``.
+
+    Handles ``[1]``, ``[1, 2]``, and ``[1][2]`` marker forms. Markers not
+    present in ``pool`` are silently dropped (never invented, never a
+    crash).
+    """
+    ordered: list[Citation] = []
+    seen: set[int] = set()
+    for match in _MARKER_RE.finditer(text):
+        for raw in match.group(1).split(","):
+            marker = int(raw.strip())
+            if marker in seen:
+                continue
+            citation = pool.get(marker)
+            if citation is None:
+                continue
+            seen.add(marker)
+            ordered.append(citation)
+    return ordered
 
 
 class Agent:
@@ -62,6 +88,7 @@ class Agent:
         last_text = ""
         iterations = 0
         usage_totals: dict[str, int] = {}
+        citation_pool: dict[int, Citation] = {}
         for iterations in range(1, self.max_iterations + 1):
             response: LLMResponse = await self.llm.chat(
                 messages,
@@ -82,6 +109,7 @@ class Agent:
                     iterations=iterations,
                     stopped_on="final_answer",
                     usage=usage_totals,
+                    citations=_cited_from(response.content, citation_pool),
                 )
 
             messages.append(
@@ -97,13 +125,16 @@ class Agent:
             )
             for result in results:
                 messages.append(Message(role=Role.TOOL, tool_result=result))
+                self._accumulate_citations(citation_pool, result.citations)
 
+        final_text = last_text or _MAX_ITERATIONS_FALLBACK
         return AgentResponse(
-            content=last_text or _MAX_ITERATIONS_FALLBACK,
+            content=final_text,
             messages=messages,
             iterations=iterations,
             stopped_on="max_iterations",
             usage=usage_totals,
+            citations=_cited_from(final_text, citation_pool),
         )
 
     async def run_stream(
@@ -120,6 +151,7 @@ class Agent:
         last_text = ""
         iterations = 0
         usage_totals: dict[str, int] = {}
+        citation_pool: dict[int, Citation] = {}
         for iterations in range(1, self.max_iterations + 1):
             response: LLMResponse | None = None
             async for chunk in self.llm.chat_stream(
@@ -148,6 +180,7 @@ class Agent:
                         iterations=iterations,
                         stopped_on="final_answer",
                         usage=usage_totals,
+                        citations=_cited_from(response.content, citation_pool),
                     ),
                 )
                 return
@@ -165,15 +198,18 @@ class Agent:
             )
             for result in results:
                 messages.append(Message(role=Role.TOOL, tool_result=result))
+                self._accumulate_citations(citation_pool, result.citations)
 
+        final_text = last_text or _MAX_ITERATIONS_FALLBACK
         yield AgentStreamEvent(
             type="final",
             response=AgentResponse(
-                content=last_text or _MAX_ITERATIONS_FALLBACK,
+                content=final_text,
                 messages=messages,
                 iterations=iterations,
                 stopped_on="max_iterations",
                 usage=usage_totals,
+                citations=_cited_from(final_text, citation_pool),
             ),
         )
 
@@ -181,6 +217,11 @@ class Agent:
     def _accumulate_usage(totals: dict[str, int], usage: dict[str, int]) -> None:
         for key, value in usage.items():
             totals[key] = totals.get(key, 0) + value
+
+    @staticmethod
+    def _accumulate_citations(pool: dict[int, Citation], citations: list[Citation]) -> None:
+        for citation in citations:
+            pool.setdefault(citation.marker, citation)
 
     async def _execute_tool_call(self, call: ToolCall) -> ToolResult:
         tool = self._tools_by_name.get(call.name)
@@ -192,7 +233,7 @@ class Agent:
                 is_error=True,
             )
         try:
-            content = await tool.execute(**call.arguments)
+            out = await tool.execute(**call.arguments)
         except Exception as exc:  # noqa: BLE001 - tool failures must never crash the loop
             return ToolResult(
                 tool_call_id=call.id,
@@ -200,4 +241,8 @@ class Agent:
                 content=f"Error: {exc}",
                 is_error=True,
             )
-        return ToolResult(tool_call_id=call.id, name=call.name, content=content)
+        if isinstance(out, ToolOutput):
+            return ToolResult(
+                tool_call_id=call.id, name=call.name, content=out.content, citations=out.citations
+            )
+        return ToolResult(tool_call_id=call.id, name=call.name, content=out)

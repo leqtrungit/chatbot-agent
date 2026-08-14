@@ -127,11 +127,21 @@ export interface SendChatMessageResponse {
 
 export type JobStatus = "queued" | "in_progress" | "complete" | "failed" | "not_found";
 
+export interface Citation {
+  marker: number;
+  source_id: string;
+  title: string;
+  snippet: string;
+  score: number | null;
+  metadata: Record<string, unknown>;
+}
+
 export interface JobResult {
   reply: string;
   session_id: string;
   iterations: number;
   stopped_on: string;
+  citations?: Citation[];
 }
 
 export interface Job {

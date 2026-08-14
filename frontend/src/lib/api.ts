@@ -5,6 +5,7 @@ import type {
   ApiKey,
   BreakdownBy,
   BreakdownRow,
+  Citation,
   CreateAgentInput,
   CreateApiKeyInput,
   CreateApiKeyResponse,
@@ -32,6 +33,7 @@ export interface ChatStreamEvent {
   iterations?: number;
   stopped_on?: string;
   message?: string;
+  citations?: Citation[];
 }
 
 const API_BASE_URL =

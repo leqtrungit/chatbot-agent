@@ -19,6 +19,7 @@ class RecordingTool(Tool):
         input_schema: dict[str, Any] | None = None,
         result: str = "ok",
         error: Exception | None = None,
+        prompt_fragment: str = "",
     ):
         self._name = name
         self._description = description
@@ -28,6 +29,7 @@ class RecordingTool(Tool):
         }
         self.result = result
         self.error = error
+        self._prompt_fragment = prompt_fragment
         self.calls: list[dict[str, Any]] = []
 
     @property
@@ -41,6 +43,10 @@ class RecordingTool(Tool):
     @property
     def input_schema(self) -> dict[str, Any]:
         return self._input_schema
+
+    @property
+    def prompt_fragment(self) -> str:
+        return self._prompt_fragment
 
     async def execute(self, **kwargs: Any) -> str:
         self.calls.append(kwargs)

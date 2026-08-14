@@ -342,6 +342,62 @@ async def test_happy_path_streams_queued_token_and_done_frames(
     assert done_frame["type"] == "done"
 
 
+async def test_citations_pass_through_sse_done_frame_unchanged(
+    client, admin_auth_header, api_key_header, monkeypatch
+):
+    """Citations published by the worker in the 'done' payload must reach
+    the client's SSE frame unmodified — sse_frame/relay_job_events are
+    unknown-field passthrough, no dedicated handling needed."""
+    domain = await _create_domain(client, admin_auth_header)
+    agent = await _create_agent(client, admin_auth_header, domain["id"])
+
+    fake_redis = _patch_fake_redis(monkeypatch)
+    _patch_enqueue(monkeypatch, fake_redis)
+
+    from app.modules.chat.service import sse_frame
+
+    citations = [
+        {
+            "marker": 1,
+            "source_id": "doc-1:0",
+            "title": "handbook.pdf",
+            "snippet": "We are open 9-5.",
+            "score": 0.87,
+            "metadata": {"document_id": "doc-1", "chunk_index": 0, "filename": "handbook.pdf"},
+        }
+    ]
+
+    async def _mock_relay(pubsub):
+        yield sse_frame(
+            {
+                "type": "done",
+                "reply": "We are open 9-5. [1]",
+                "session_id": "s",
+                "iterations": 1,
+                "stopped_on": "final_answer",
+                "citations": citations,
+            }
+        )
+
+    monkeypatch.setattr("app.modules.chat.router.relay_job_events", _mock_relay)
+
+    resp = await client.post(
+        "/api/chat/stream",
+        json={"agent_id": agent["id"], "session_id": "s", "message": "What are your hours?"},
+        headers=api_key_header,
+    )
+    assert resp.status_code == 200
+
+    lines = []
+    async for line in resp.aiter_lines():
+        if line.strip():
+            lines.append(line)
+
+    done_frame = json.loads(lines[-1].replace("data: ", ""))
+    assert done_frame["type"] == "done"
+    assert done_frame["citations"] == citations
+
+
 async def test_enqueue_uses_generated_job_id_as_job_id_param(
     client, admin_auth_header, api_key_header, monkeypatch
 ):

@@ -28,7 +28,7 @@ import {
   streamChatMessage,
   type ChatStreamEvent,
 } from "@/lib/api";
-import type { Agent, JobStatus } from "@/lib/types";
+import type { Agent, Citation, JobStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 interface ChatMessage {
@@ -36,6 +36,7 @@ interface ChatMessage {
   role: "user" | "assistant" | "thinking" | "error";
   content: string;
   jobStatus?: JobStatus;
+  citations?: Citation[];
 }
 
 const POLL_INTERVAL_MS = 1500;
@@ -110,6 +111,59 @@ function ThinkingBubble({
   );
 }
 
+function CitationsBlock({
+  citations,
+  collapsed,
+  onToggle,
+}: {
+  citations: Citation[];
+  collapsed: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <div className="mt-1.5 max-w-[85%] text-xs text-muted-foreground">
+      <button
+        type="button"
+        onClick={onToggle}
+        className="flex items-center gap-1 font-medium text-muted-foreground"
+      >
+        Sources
+        <ChevronDownIcon
+          className={cn(
+            "size-3.5 transition-transform",
+            collapsed && "-rotate-90"
+          )}
+        />
+      </button>
+      {!collapsed ? (
+        <ul className="mt-1 space-y-1">
+          {citations.map((citation) => (
+            <li key={citation.marker} className="rounded-md border border-border/50 px-2 py-1">
+              <div className="flex items-center gap-1.5">
+                <span className="font-mono">[{citation.marker}]</span>
+                <span className="truncate text-foreground/80">{citation.title}</span>
+                {citation.score != null ? (
+                  <span className="ml-auto shrink-0 font-mono">
+                    {citation.score.toFixed(citation.score < 1 ? 3 : 2)}
+                  </span>
+                ) : null}
+              </div>
+              {citation.snippet ? (
+                <details className="mt-1">
+                  <summary className="cursor-pointer select-none text-muted-foreground/80">
+                    Snippet
+                  </summary>
+                  <p className="mt-1 whitespace-pre-wrap">{citation.snippet}</p>
+                </details>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
 export function PlaygroundDrawer({
   open,
   onOpenChange,
@@ -126,6 +180,9 @@ export function PlaygroundDrawer({
   const [jobStatusText, setJobStatusText] = useState<string | null>(null);
   const [apiKey, setApiKey] = useState<string>("");
   const [collapsedThinking, setCollapsedThinking] = useState<
+    Record<string, boolean>
+  >({});
+  const [collapsedSources, setCollapsedSources] = useState<
     Record<string, boolean>
   >({});
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -212,6 +269,7 @@ export function PlaygroundDrawer({
             id: newId(),
             role: "assistant",
             content: job.result?.reply ?? "(empty reply)",
+            citations: job.result?.citations,
           },
         ]);
         setJobStatusText(null);
@@ -316,6 +374,20 @@ export function PlaygroundDrawer({
             }
           } else if (streamEvent.type === "done") {
             setJobStatusText(null);
+            if (streamEvent.citations && streamEvent.citations.length > 0) {
+              const citations = streamEvent.citations;
+              setMessages((prev) => {
+                const updated = [...prev];
+                const lastMsg = updated[updated.length - 1];
+                if (lastMsg && lastMsg.role === "assistant") {
+                  updated[updated.length - 1] = {
+                    ...lastMsg,
+                    citations,
+                  };
+                }
+                return updated;
+              });
+            }
           } else if (streamEvent.type === "error") {
             setMessages((prev) => [
               ...prev,
@@ -444,12 +516,17 @@ export function PlaygroundDrawer({
                 );
               }
 
+              const hasCitations =
+                msg.role === "assistant" &&
+                msg.citations &&
+                msg.citations.length > 0;
+
               return (
                 <div
                   key={msg.id}
                   className={cn(
-                    "flex",
-                    msg.role === "user" ? "justify-end" : "justify-start"
+                    "flex flex-col",
+                    msg.role === "user" ? "items-end" : "items-start"
                   )}
                 >
                   <div
@@ -465,6 +542,18 @@ export function PlaygroundDrawer({
                   >
                     {msg.content}
                   </div>
+                  {hasCitations ? (
+                    <CitationsBlock
+                      citations={msg.citations!}
+                      collapsed={collapsedSources[msg.id] ?? true}
+                      onToggle={() =>
+                        setCollapsedSources((prev) => ({
+                          ...prev,
+                          [msg.id]: !(prev[msg.id] ?? true),
+                        }))
+                      }
+                    />
+                  ) : null}
                 </div>
               );
             })

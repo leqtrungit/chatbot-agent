@@ -27,11 +27,21 @@ class ToolCall(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
 
 
+class Citation(BaseModel):
+    marker: int                      # the [n] number shown to the LLM
+    source_id: str                   # stable dedup key, e.g. "<document_id>:<chunk_index>"
+    title: str = ""                  # e.g. filename
+    snippet: str = ""                # truncated source content
+    score: float | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class ToolResult(BaseModel):
     tool_call_id: str
     name: str
     content: str
     is_error: bool = False
+    citations: list[Citation] = Field(default_factory=list)
 
 
 class Message(BaseModel):
@@ -81,6 +91,7 @@ class AgentResponse(BaseModel):
     iterations: int = 0
     stopped_on: str = "final_answer"  # final_answer | max_iterations | error
     usage: dict[str, int] = Field(default_factory=dict)  # summed across every LLM call in the run
+    citations: list[Citation] = Field(default_factory=list)
 
 
 class AgentStreamEvent(BaseModel):

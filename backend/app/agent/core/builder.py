@@ -99,6 +99,8 @@ class AgentBuilder:
                 )
             seen_names[tool.name] = "base tools"
             all_tools.append(tool)
+            if tool.prompt_fragment and tool.prompt_fragment not in fragments:
+                fragments.append(tool.prompt_fragment)
 
         for skill in self._skills:
             fragments.append(skill.prompt_fragment)

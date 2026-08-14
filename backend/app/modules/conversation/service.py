@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -77,6 +78,8 @@ async def append_turn(
     session_id: str,
     user_text: str,
     assistant_text: str,
+    *,
+    citations: list[dict[str, Any]] | None = None,
 ) -> None:
     """Persist the user turn and the agent's final reply as two rows.
 
@@ -85,6 +88,9 @@ async def append_turn(
     ``created_at`` and leave ordering to tie-break on the random UUID id.
     Set strictly increasing timestamps client-side instead so
     ``load_history`` reconstructs turns in the right order.
+
+    ``citations`` (if any) are stored on the assistant row only — the user
+    row never carries citations.
     """
     user_ts = datetime.now(timezone.utc)
     assistant_ts = user_ts + timedelta(microseconds=1)
@@ -103,6 +109,7 @@ async def append_turn(
                 role="assistant",
                 content=assistant_text,
                 created_at=assistant_ts,
+                citations=citations,
             ),
         ]
     )
