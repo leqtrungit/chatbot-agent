@@ -24,17 +24,24 @@ class Settings(BaseSettings):
     ADMIN_USERNAME: str = "admin"
     ADMIN_PASSWORD: str = "admin"
 
-    LLM_PROVIDER: str = "ollama"
+    # Ollama host: serves embeddings (which have no agent row to configure) and
+    # is the fallback for ollama agents that leave base_url blank. Chat
+    # provider/model/credentials otherwise come from the Agent row.
     OLLAMA_BASE_URL: str = "http://localhost:11434"
-    OPENAI_BASE_URL: str = "https://api.openai.com/v1"
-    OPENAI_API_KEY: str = ""
-    CHAT_MODEL: str = "qwen2.5"
+
+    # Embeddings are deployment-wide, not per-agent: ingestion and knowledge
+    # search share the one `document_chunks.embedding` vector space, so the
+    # provider/model/dimension must be identical for both.
+    EMBEDDING_PROVIDER: str = "ollama"  # ollama | openai
+    EMBEDDING_BASE_URL: str = ""  # blank -> OLLAMA_BASE_URL, or public OpenAI
+    EMBEDDING_API_KEY: str = ""
     EMBEDDING_MODEL: str = "nomic-embed-text"
+    # Fixed by the Vector() column + HNSW index. This is an assertion, not a
+    # knob: changing it needs a migration and a re-ingest of every document.
     EMBEDDING_DIM: int = 768
 
-    AGENT_SYSTEM_PROMPT_TEMPLATE: str = "domain_qa"
-    AGENT_MAX_ITERATIONS: int = 10
     CHAT_HISTORY_LIMIT: int = 20
+    MAX_CLIENT_HISTORY_MESSAGES: int = 200
 
     UPLOAD_DIR: str = str(Path(__file__).resolve().parents[2] / "data" / "uploads")
 

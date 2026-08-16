@@ -10,9 +10,12 @@ import pytest
 
 from sqlalchemy import select
 
-from app.agent.core.types import AgentResponse, AgentStreamEvent, LLMResponse, Message, Role, ToolCall
+from app.agent.core.types import AgentResponse, AgentStreamEvent, Citation, LLMResponse, Message, Role, ToolCall
 from app.core.config import get_settings
 from app.modules.agent.models import Agent
+from app.modules.analytics.models import RequestLog
+from app.modules.apikey import service as apikey_service
+from app.modules.apikey.schemas import ApiKeyCreate
 from app.modules.conversation.models import ChatMessage
 from app.worker import tasks
 
@@ -59,6 +62,12 @@ async def _seed_agent(session_maker) -> uuid.UUID:
         session.add(agent)
         await session.commit()
         return agent.id
+
+
+async def _seed_api_key(session_maker, name="App") -> uuid.UUID:
+    async with session_maker() as session:
+        api_key, _raw = await apikey_service.create_api_key(session, ApiKeyCreate(name=name))
+        return api_key.id
 
 
 def _make_fake_session_maker():
@@ -125,7 +134,7 @@ def _make_fake_load_history(history):
 
 def _make_fake_append_turn():
     """Create a fake append_turn that does nothing (for tests that don't verify persistence)."""
-    async def fake_append_turn(session, agent_uuid, session_id, text, content):
+    async def fake_append_turn(session, agent_uuid, session_id, text, content, *, citations=None):
         pass
     return fake_append_turn
 
@@ -178,6 +187,7 @@ async def test_process_chat_job_stream_publishes_tokens_then_done(monkeypatch):
             "session_id": "sess-1",
             "iterations": 1,
             "stopped_on": "final_answer",
+            "citations": [],
         },
     )
 
@@ -187,6 +197,7 @@ async def test_process_chat_job_stream_publishes_tokens_then_done(monkeypatch):
         "session_id": "sess-1",
         "iterations": 1,
         "stopped_on": "final_answer",
+        "citations": [],
     }
 
 
@@ -286,6 +297,68 @@ async def test_process_chat_job_stream_tool_call_then_final_publishes_only_final
     assert fake_redis.published[2][1]["type"] == "done"
 
 
+async def test_process_chat_job_stream_client_managed_history_skips_db_load_and_persist(
+    session_maker, monkeypatch
+):
+    """When ``history`` is supplied, the worker must use it as-is and must not
+    touch ``chat_messages`` at all (neither load nor append)."""
+    agent_id = await _seed_agent(session_maker)
+    monkeypatch.setattr(tasks, "PgVectorKnowledgeSearcher", _FakeSearcher)
+
+    async def _fail_if_called(*args, **kwargs):
+        raise AssertionError("load_history must not be called for client-managed history")
+
+    monkeypatch.setattr(tasks, "load_history", _fail_if_called)
+
+    fake_redis = _FakeRedis()
+    ctx = await _make_ctx(session_maker=session_maker, redis=fake_redis)
+
+    fake_agent = _FakeAgent(
+        stream_chunks=[
+            AgentStreamEvent(
+                type="final",
+                response=AgentResponse(content="Answer", messages=[], iterations=1, stopped_on="final_answer"),
+            ),
+        ]
+    )
+
+    async def _fake_build_agent(*args, **kwargs):
+        return fake_agent
+
+    monkeypatch.setattr(tasks, "build_agent", _fake_build_agent)
+
+    await tasks.process_chat_job_stream(
+        ctx,
+        agent_id=str(agent_id),
+        session_id="sess-client-managed-stream",
+        text="New question",
+        metadata={},
+        platform="generic",
+        history=[
+            {"role": "user", "content": "Earlier question"},
+            {"role": "assistant", "content": "Earlier answer"},
+        ],
+    )
+
+    passed_history = fake_agent.stream_calls[0]["history"]
+    assert [m.content for m in passed_history] == ["Earlier question", "Earlier answer"]
+
+    async with session_maker() as session:
+        rows = list(
+            (
+                await session.execute(
+                    select(ChatMessage).where(
+                        ChatMessage.agent_id == agent_id,
+                        ChatMessage.session_id == "sess-client-managed-stream",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert rows == []
+
+
 async def test_process_chat_job_stream_persists_turn_and_reuses_history(session_maker, monkeypatch):
     """Verify turn is persisted and history is reused across calls.
 
@@ -356,6 +429,163 @@ async def test_process_chat_job_stream_persists_turn_and_reuses_history(session_
         "Second question",
         "Second answer",
     ]
+
+
+async def test_process_chat_job_stream_done_payload_and_persisted_row_carry_citations(
+    session_maker, monkeypatch
+):
+    """Citations from the final AgentResponse must appear in the 'done'
+    payload, the return dict, and the persisted assistant ChatMessage row."""
+    agent_id = await _seed_agent(session_maker)
+    monkeypatch.setattr(tasks, "PgVectorKnowledgeSearcher", _FakeSearcher)
+
+    fake_redis = _FakeRedis()
+    ctx = await _make_ctx(session_maker=session_maker, redis=fake_redis)
+
+    citation = Citation(
+        marker=1,
+        source_id="doc-1:0",
+        title="handbook.pdf",
+        snippet="We are open 9-5.",
+        score=0.87,
+        metadata={"document_id": "doc-1", "chunk_index": 0, "filename": "handbook.pdf"},
+    )
+    fake_agent = _FakeAgent(
+        stream_chunks=[
+            AgentStreamEvent(
+                type="final",
+                response=AgentResponse(
+                    content="We are open 9-5. [1]",
+                    messages=[],
+                    iterations=1,
+                    stopped_on="final_answer",
+                    citations=[citation],
+                ),
+            ),
+        ]
+    )
+
+    async def _fake_build_agent(*args, **kwargs):
+        return fake_agent
+
+    monkeypatch.setattr(tasks, "build_agent", _fake_build_agent)
+
+    result = await tasks.process_chat_job_stream(
+        ctx,
+        agent_id=str(agent_id),
+        session_id="sess-cit-stream",
+        text="What are your hours?",
+        metadata={},
+        platform="generic",
+    )
+
+    expected_citations = [citation.model_dump()]
+    assert result["citations"] == expected_citations
+
+    done_frame = fake_redis.published[-1]
+    assert done_frame[1]["type"] == "done"
+    assert done_frame[1]["citations"] == expected_citations
+
+    async with session_maker() as session:
+        rows = list(
+            (
+                await session.execute(
+                    select(ChatMessage).where(
+                        ChatMessage.agent_id == agent_id, ChatMessage.session_id == "sess-cit-stream"
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assistant_row = next(r for r in rows if r.role == "assistant")
+    assert assistant_row.citations == expected_citations
+
+
+async def test_process_chat_job_stream_writes_request_log_on_success(session_maker, monkeypatch):
+    agent_id = await _seed_agent(session_maker)
+    api_key_id = await _seed_api_key(session_maker)
+    monkeypatch.setattr(tasks, "PgVectorKnowledgeSearcher", _FakeSearcher)
+
+    fake_redis = _FakeRedis()
+    ctx = await _make_ctx(session_maker=session_maker, redis=fake_redis)
+
+    fake_agent = _FakeAgent(
+        stream_chunks=[
+            AgentStreamEvent(
+                type="final",
+                response=AgentResponse(
+                    content="Answer",
+                    messages=[],
+                    iterations=1,
+                    stopped_on="final_answer",
+                    usage={"prompt_tokens": 8, "completion_tokens": 4},
+                ),
+            ),
+        ]
+    )
+
+    async def _fake_build_agent(*args, **kwargs):
+        return fake_agent
+
+    monkeypatch.setattr(tasks, "build_agent", _fake_build_agent)
+
+    await tasks.process_chat_job_stream(
+        ctx,
+        agent_id=str(agent_id),
+        session_id="sess-log-stream",
+        text="Hi",
+        metadata={"app_id": str(api_key_id), "app_name": "App"},
+        platform="generic",
+    )
+
+    async with session_maker() as session:
+        rows = list((await session.execute(select(RequestLog))).scalars().all())
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.status == "success"
+    assert row.api_key_id == api_key_id
+    assert row.agent_id == agent_id
+    assert row.prompt_tokens == 8
+    assert row.completion_tokens == 4
+
+
+async def test_process_chat_job_stream_writes_request_log_on_failure(session_maker, monkeypatch):
+    agent_id = await _seed_agent(session_maker)
+    api_key_id = await _seed_api_key(session_maker)
+    monkeypatch.setattr(tasks, "PgVectorKnowledgeSearcher", _FakeSearcher)
+
+    fake_redis = _FakeRedis()
+    ctx = await _make_ctx(session_maker=session_maker, redis=fake_redis)
+
+    class _StreamingExplodingAgent:
+        async def run_stream(self, text, history=None):
+            raise RuntimeError("stream boom")
+            yield  # pragma: no cover - unreachable, makes this an async generator
+
+    async def _fake_build_agent(*args, **kwargs):
+        return _StreamingExplodingAgent()
+
+    monkeypatch.setattr(tasks, "build_agent", _fake_build_agent)
+
+    with pytest.raises(RuntimeError, match="stream boom"):
+        await tasks.process_chat_job_stream(
+            ctx,
+            agent_id=str(agent_id),
+            session_id="sess-log-stream-err",
+            text="Hi",
+            metadata={"app_id": str(api_key_id), "app_name": "App"},
+            platform="generic",
+        )
+
+    async with session_maker() as session:
+        rows = list((await session.execute(select(RequestLog))).scalars().all())
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.status == "error"
+    assert row.error_message is not None
 
 
 async def test_process_chat_job_stream_publishes_error_and_reraises(monkeypatch):

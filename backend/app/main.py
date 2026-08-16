@@ -7,8 +7,10 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import get_settings
 from app.modules.agent.router import router as agent_router
+from app.modules.analytics.router import router as analytics_router
 from app.modules.apikey.router import router as apikey_router
 from app.modules.chat.router import chat_router
+from app.modules.conversation.router import conversation_router
 from app.modules.document.router import router as document_router
 from app.modules.domain.router import router as domain_router
 from app.modules.mcp.router import router as mcp_router
@@ -35,6 +37,8 @@ def create_app() -> FastAPI:
     app.include_router(webhook_router)
     app.include_router(jobs_router)
     app.include_router(chat_router)
+    app.include_router(conversation_router)
+    app.include_router(analytics_router)
 
     @app.get("/health")
     async def health() -> dict[str, str]:

@@ -13,6 +13,7 @@ from app.agent.core.agent import Agent
 from app.agent.core.builder import AgentBuilder
 from app.agent.core.types import (
     AgentResponse,
+    Citation,
     LLMResponse,
     Message,
     ModelParams,
@@ -22,13 +23,14 @@ from app.agent.core.types import (
 )
 from app.agent.prompts.loader import PromptLoader
 from app.agent.skills.base import Skill
-from app.agent.tools.base import FunctionTool, Tool
+from app.agent.tools.base import FunctionTool, Tool, ToolOutput
 from app.agent.tools.knowledge_search import KnowledgeHit, KnowledgeSearcher, KnowledgeSearchTool
 
 __all__ = [
     "Agent",
     "AgentBuilder",
     "AgentResponse",
+    "Citation",
     "LLMResponse",
     "Message",
     "ModelParams",
@@ -36,6 +38,7 @@ __all__ = [
     "ToolCall",
     "ToolResult",
     "Tool",
+    "ToolOutput",
     "FunctionTool",
     "KnowledgeSearchTool",
     "KnowledgeSearcher",

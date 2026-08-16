@@ -279,7 +279,7 @@ export default function AgentsPage() {
     setDeleting(true);
     try {
       await deleteAgent(deleteTarget.id);
-      toast.success("Agent deleted");
+      toast.success("Agent deactivated");
       setDeleteTarget(null);
       refresh();
     } catch (err) {
@@ -639,10 +639,11 @@ export default function AgentsPage() {
       <AlertDialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete agent?</AlertDialogTitle>
+            <AlertDialogTitle>Deactivate agent?</AlertDialogTitle>
             <AlertDialogDescription>
-              This will permanently delete &quot;{deleteTarget?.name}&quot; and unassign it from
-              every domain. This action cannot be undone.
+              This will deactivate &quot;{deleteTarget?.name}&quot; — it will stop responding to
+              new chat requests, but its history stays intact and it can be reactivated later by
+              editing it.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -653,7 +654,7 @@ export default function AgentsPage() {
               disabled={deleting}
             >
               {deleting ? <Loader2Icon className="animate-spin" /> : null}
-              Delete
+              Deactivate
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

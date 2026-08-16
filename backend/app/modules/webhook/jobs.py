@@ -32,6 +32,7 @@ async def enqueue_chat_job(
     text: str,
     metadata: dict[str, Any],
     platform: str,
+    history: list[dict[str, Any]] | None = None,
 ) -> str:
     pool = await get_arq_pool()
     job = await pool.enqueue_job(
@@ -41,6 +42,7 @@ async def enqueue_chat_job(
         text=text,
         metadata=metadata,
         platform=platform,
+        history=history,
     )
     assert job is not None  # enqueue_job only returns None on job-id collision
     return job.job_id

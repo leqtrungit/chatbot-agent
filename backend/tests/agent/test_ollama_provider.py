@@ -71,7 +71,7 @@ async def test_chat_request_payload_mapping_and_response_parsing():
     assert response.content == "Hello!"
     assert response.finish_reason == "stop"
     assert response.tool_calls == []
-    assert response.usage == {"prompt_eval_count": 10, "eval_count": 5}
+    assert response.usage == {"prompt_tokens": 10, "completion_tokens": 5}
 
 
 async def test_chat_request_without_tools_omits_tools_key():
@@ -201,7 +201,7 @@ async def test_chat_stream_yields_incremental_deltas_then_final():
     assert chunks[2].done is True
     assert chunks[2].response.content == "Hello!"
     assert chunks[2].response.finish_reason == "stop"
-    assert chunks[2].response.usage == {"prompt_eval_count": 5, "eval_count": 3}
+    assert chunks[2].response.usage == {"prompt_tokens": 5, "completion_tokens": 3}
 
 
 async def test_chat_stream_yields_thinking_deltas_separately_from_content():

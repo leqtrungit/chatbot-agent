@@ -81,6 +81,12 @@ def _parse_arguments(raw: Any) -> dict[str, Any]:
     return dict(raw or {})
 
 
+def _auth_headers(api_key: str) -> dict[str, str]:
+    """Blank key means the endpoint authenticates some other way (network,
+    gateway); sending an empty Bearer gets rejected by some of them."""
+    return {"Authorization": f"Bearer {api_key}"} if api_key else {}
+
+
 class OpenAICompatProvider:
     def __init__(self, base_url: str, api_key: str, timeout: float = 120.0):
         self.base_url = base_url.rstrip("/")
@@ -107,7 +113,7 @@ class OpenAICompatProvider:
         response = await self._client.post(
             "/chat/completions",
             json=payload,
-            headers={"Authorization": f"Bearer {self.api_key}"},
+            headers=_auth_headers(self.api_key),
         )
         response.raise_for_status()
         data = response.json()
@@ -150,6 +156,7 @@ class OpenAICompatProvider:
             "model": model,
             "messages": [_message_to_openai(m) for m in messages],
             "stream": True,  # Explicitly enable streaming
+            "stream_options": {"include_usage": True},
         }
         if tools:
             payload["tools"] = [_tool_to_openai(t) for t in tools]
@@ -159,12 +166,13 @@ class OpenAICompatProvider:
         content = ""
         finish_reason: str | None = None
         tool_accum: dict[int, dict] = {}  # keyed by tool call index
+        usage: dict[str, int] = {}
 
         async with self._client.stream(
             "POST",
             "/chat/completions",
             json=payload,
-            headers={"Authorization": f"Bearer {self.api_key}"},
+            headers=_auth_headers(self.api_key),
         ) as response:
             response.raise_for_status()
 
@@ -189,6 +197,16 @@ class OpenAICompatProvider:
                     chunk = json.loads(data_str)
                 except json.JSONDecodeError:
                     continue
+
+                # OpenAI's trailing usage-only chunk (stream_options.include_usage)
+                # has an empty `choices` list and must be captured before the
+                # empty-choices skip below drops it.
+                chunk_usage = chunk.get("usage")
+                if chunk_usage:
+                    if "prompt_tokens" in chunk_usage:
+                        usage["prompt_tokens"] = chunk_usage["prompt_tokens"]
+                    if "completion_tokens" in chunk_usage:
+                        usage["completion_tokens"] = chunk_usage["completion_tokens"]
 
                 # Extract the first choice
                 if "choices" not in chunk or not chunk["choices"]:
@@ -253,17 +271,58 @@ class OpenAICompatProvider:
         ]
 
         # Yield final chunk with complete response
-        # Note: usage is deliberately left empty (scope cut; not requesting
-        # stream_options.include_usage from OpenAI)
         yield StreamChunk(
             done=True,
             response=LLMResponse(
                 content=content,
                 tool_calls=tool_calls,
                 finish_reason=finish_reason,
-                usage={},
+                usage=usage,
             ),
         )
+
+    async def aclose(self) -> None:
+        await self._client.aclose()
+
+
+class OpenAICompatEmbeddingProvider:
+    """``EmbeddingProvider`` for any OpenAI-compatible ``/embeddings`` endpoint.
+
+    Kept separate from :class:`OpenAICompatProvider` because embeddings are a
+    deployment-wide concern (one vector space per ``document_chunks.embedding``
+    column) while chat credentials are per-agent config.
+    """
+
+    def __init__(self, base_url: str, api_key: str, timeout: float = 120.0):
+        self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
+        self.timeout = timeout
+        self._client = httpx.AsyncClient(base_url=self.base_url, timeout=timeout)
+
+    async def embed(self, texts: list[str], *, model: str) -> list[list[float]]:
+        if not texts:
+            return []
+
+        response = await self._client.post(
+            "/embeddings",
+            json={"model": model, "input": texts},
+            headers=_auth_headers(self.api_key),
+        )
+        response.raise_for_status()
+        data = response.json()["data"]
+
+        if len(data) != len(texts):
+            # Callers zip() vectors against their inputs, so a short response
+            # would silently drop the tail rather than fail.
+            raise ValueError(
+                f"embedding endpoint returned {len(data)} vectors for {len(texts)} inputs"
+            )
+
+        # `index` is authoritative where present: the API does not promise
+        # response ordering. Some compatible gateways omit it and rely on
+        # positional order instead.
+        ordered = sorted(enumerate(data), key=lambda pair: pair[1].get("index", pair[0]))
+        return [item["embedding"] for _, item in ordered]
 
     async def aclose(self) -> None:
         await self._client.aclose()

@@ -5,13 +5,23 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any, Awaitable, Callable
 
+from pydantic import BaseModel, Field
+
+from app.agent.core.types import Citation
+
+
+class ToolOutput(BaseModel):
+    content: str                     # the text the LLM reads
+    citations: list[Citation] = Field(default_factory=list)
+
 
 class Tool(ABC):
     """A single callable capability the agent can invoke.
 
     Implementations must expose ``name``, ``description``, ``input_schema``
     (a JSON schema dict describing keyword arguments) and an async
-    ``execute`` that returns a plain string result for the LLM to read.
+    ``execute`` that returns a plain string, or a :class:`ToolOutput`
+    (string plus citations) for the LLM to read.
     """
 
     @property
@@ -27,7 +37,18 @@ class Tool(ABC):
     def input_schema(self) -> dict[str, Any]: ...
 
     @abstractmethod
-    async def execute(self, **kwargs: Any) -> str: ...
+    async def execute(self, **kwargs: Any) -> str | ToolOutput: ...
+
+    @property
+    def prompt_fragment(self) -> str:
+        """Instruction fragment appended to the system prompt, if any.
+
+        A tool may contribute a fragment of prompt text (e.g. instructions
+        for how to use its output) that gets appended to the agent's system
+        prompt, mirroring :class:`app.agent.skills.base.Skill`. Empty by
+        default.
+        """
+        return ""
 
     def to_definition(self) -> dict[str, Any]:
         """Return the tool definition shape expected by ``LLMProvider.chat``."""

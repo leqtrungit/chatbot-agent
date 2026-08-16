@@ -144,8 +144,11 @@ async def update_agent(session: AsyncSession, agent_id: uuid.UUID, data: AgentUp
 
 
 async def delete_agent(session: AsyncSession, agent_id: uuid.UUID) -> None:
+    """Soft delete: mark the agent inactive rather than removing the row, so
+    request history (``request_logs``, ``chat_messages``) stays intact and
+    admins can still see/reactivate it — mirrors ``ApiKey.revoked_at``."""
     agent = await get_agent(session, agent_id)
-    await session.delete(agent)
+    agent.is_active = False
     await session.commit()
 
 

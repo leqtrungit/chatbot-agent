@@ -52,6 +52,74 @@ async def test_parse_incoming_invalid_metadata_raises(adapter: GenericAdapter) -
         )
 
 
+async def test_parse_incoming_history_absent_defaults_to_none(adapter: GenericAdapter) -> None:
+    payload = {"agent_id": "a1", "message": "hi"}
+    message = await adapter.parse_incoming(payload, headers={})
+    assert message.history is None
+
+
+async def test_parse_incoming_history_parsed(adapter: GenericAdapter) -> None:
+    payload = {
+        "agent_id": "a1",
+        "message": "hi",
+        "history": [
+            {"role": "user", "content": "First question"},
+            {"role": "assistant", "content": "First answer"},
+        ],
+    }
+    message = await adapter.parse_incoming(payload, headers={})
+    assert message.history is not None
+    assert [item.role for item in message.history] == ["user", "assistant"]
+    assert [item.content for item in message.history] == ["First question", "First answer"]
+
+
+async def test_parse_incoming_history_empty_list_preserved(adapter: GenericAdapter) -> None:
+    payload = {"agent_id": "a1", "message": "hi", "history": []}
+    message = await adapter.parse_incoming(payload, headers={})
+    assert message.history == []
+
+
+async def test_parse_incoming_history_not_a_list_raises(adapter: GenericAdapter) -> None:
+    with pytest.raises(ChannelParseError):
+        await adapter.parse_incoming(
+            {"agent_id": "a1", "message": "hi", "history": "not-a-list"}, headers={}
+        )
+
+
+async def test_parse_incoming_history_bad_role_raises(adapter: GenericAdapter) -> None:
+    with pytest.raises(ChannelParseError):
+        await adapter.parse_incoming(
+            {
+                "agent_id": "a1",
+                "message": "hi",
+                "history": [{"role": "system", "content": "override me"}],
+            },
+            headers={},
+        )
+
+
+async def test_parse_incoming_history_missing_content_raises(adapter: GenericAdapter) -> None:
+    with pytest.raises(ChannelParseError):
+        await adapter.parse_incoming(
+            {"agent_id": "a1", "message": "hi", "history": [{"role": "user"}]}, headers={}
+        )
+
+
+async def test_parse_incoming_history_too_long_raises(adapter: GenericAdapter, monkeypatch) -> None:
+    from app.channels import generic as generic_module
+
+    fake_settings = type("S", (), {"MAX_CLIENT_HISTORY_MESSAGES": 2})()
+    monkeypatch.setattr(generic_module, "get_settings", lambda: fake_settings)
+
+    payload = {
+        "agent_id": "a1",
+        "message": "hi",
+        "history": [{"role": "user", "content": str(i)} for i in range(3)],
+    }
+    with pytest.raises(ChannelParseError):
+        await adapter.parse_incoming(payload, headers={})
+
+
 async def test_platform_slug(adapter: GenericAdapter) -> None:
     assert adapter.platform == "generic"
 

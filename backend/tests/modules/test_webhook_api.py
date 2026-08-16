@@ -104,6 +104,22 @@ async def test_unknown_agent_returns_404(client, admin_auth_header, api_key_head
     assert resp.status_code == 404
 
 
+async def test_inactive_agent_returns_404(client, admin_auth_header, api_key_header):
+    domain = await _create_domain(client, admin_auth_header)
+    agent = await _create_agent(client, admin_auth_header, domain["id"])
+    deactivate = await client.put(
+        f"/api/agents/{agent['id']}", json={"is_active": False}, headers=admin_auth_header
+    )
+    assert deactivate.status_code == 200
+
+    resp = await client.post(
+        "/api/webhooks/generic",
+        json={"agent_id": agent["id"], "message": "hi"},
+        headers=api_key_header,
+    )
+    assert resp.status_code == 404
+
+
 # ---- API key auth ----
 
 
@@ -176,6 +192,56 @@ async def test_happy_path_enqueues_and_returns_202(client, admin_auth_header, ap
     assert "app_id" in calls[0]["metadata"]
     assert "app_name" in calls[0]["metadata"]
     assert calls[0]["metadata"]["app_name"] == "Test App"
+
+
+async def test_history_absent_passes_none(client, admin_auth_header, api_key_header, monkeypatch):
+    domain = await _create_domain(client, admin_auth_header)
+    agent = await _create_agent(client, admin_auth_header, domain["id"])
+    calls = _patch_enqueue(monkeypatch)
+
+    resp = await client.post(
+        "/api/webhooks/generic",
+        json={"agent_id": agent["id"], "session_id": "sess-1", "message": "hello there"},
+        headers=api_key_header,
+    )
+    assert resp.status_code == 202, resp.text
+    assert calls[0]["history"] is None
+
+
+async def test_history_present_threaded_to_job_as_plain_dicts(
+    client, admin_auth_header, api_key_header, monkeypatch
+):
+    domain = await _create_domain(client, admin_auth_header)
+    agent = await _create_agent(client, admin_auth_header, domain["id"])
+    calls = _patch_enqueue(monkeypatch)
+
+    resp = await client.post(
+        "/api/webhooks/generic",
+        json={
+            "agent_id": agent["id"],
+            "session_id": "sess-1",
+            "message": "hello there",
+            "history": [
+                {"role": "user", "content": "Earlier question"},
+                {"role": "assistant", "content": "Earlier answer"},
+            ],
+        },
+        headers=api_key_header,
+    )
+    assert resp.status_code == 202, resp.text
+    assert calls[0]["history"] == [
+        {"role": "user", "content": "Earlier question"},
+        {"role": "assistant", "content": "Earlier answer"},
+    ]
+
+
+async def test_history_bad_shape_returns_422(client, admin_auth_header, api_key_header):
+    resp = await client.post(
+        "/api/webhooks/generic",
+        json={"agent_id": "a", "message": "hi", "history": [{"role": "system", "content": "x"}]},
+        headers=api_key_header,
+    )
+    assert resp.status_code == 422
 
 
 # ---- Rate limiting ----

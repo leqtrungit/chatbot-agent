@@ -123,6 +123,7 @@ def _patch_enqueue(monkeypatch, fake_redis: FakeRedis):
         text: str,
         metadata: dict[str, Any],
         platform: str,
+        history: list[dict[str, Any]] | None = None,
     ) -> None:
         call = {
             "job_id": job_id,
@@ -131,6 +132,7 @@ def _patch_enqueue(monkeypatch, fake_redis: FakeRedis):
             "text": text,
             "metadata": metadata,
             "platform": platform,
+            "history": history,
         }
         enqueue_calls.append(call)
 
@@ -340,6 +342,62 @@ async def test_happy_path_streams_queued_token_and_done_frames(
     assert done_frame["type"] == "done"
 
 
+async def test_citations_pass_through_sse_done_frame_unchanged(
+    client, admin_auth_header, api_key_header, monkeypatch
+):
+    """Citations published by the worker in the 'done' payload must reach
+    the client's SSE frame unmodified — sse_frame/relay_job_events are
+    unknown-field passthrough, no dedicated handling needed."""
+    domain = await _create_domain(client, admin_auth_header)
+    agent = await _create_agent(client, admin_auth_header, domain["id"])
+
+    fake_redis = _patch_fake_redis(monkeypatch)
+    _patch_enqueue(monkeypatch, fake_redis)
+
+    from app.modules.chat.service import sse_frame
+
+    citations = [
+        {
+            "marker": 1,
+            "source_id": "doc-1:0",
+            "title": "handbook.pdf",
+            "snippet": "We are open 9-5.",
+            "score": 0.87,
+            "metadata": {"document_id": "doc-1", "chunk_index": 0, "filename": "handbook.pdf"},
+        }
+    ]
+
+    async def _mock_relay(pubsub):
+        yield sse_frame(
+            {
+                "type": "done",
+                "reply": "We are open 9-5. [1]",
+                "session_id": "s",
+                "iterations": 1,
+                "stopped_on": "final_answer",
+                "citations": citations,
+            }
+        )
+
+    monkeypatch.setattr("app.modules.chat.router.relay_job_events", _mock_relay)
+
+    resp = await client.post(
+        "/api/chat/stream",
+        json={"agent_id": agent["id"], "session_id": "s", "message": "What are your hours?"},
+        headers=api_key_header,
+    )
+    assert resp.status_code == 200
+
+    lines = []
+    async for line in resp.aiter_lines():
+        if line.strip():
+            lines.append(line)
+
+    done_frame = json.loads(lines[-1].replace("data: ", ""))
+    assert done_frame["type"] == "done"
+    assert done_frame["citations"] == citations
+
+
 async def test_enqueue_uses_generated_job_id_as_job_id_param(
     client, admin_auth_header, api_key_header, monkeypatch
 ):
@@ -464,3 +522,97 @@ async def test_metadata_carries_app_identity(
     assert "app_name" in metadata
     assert metadata["app_name"] == "Test App"
     assert metadata["custom_key"] == "custom_value"
+
+
+# ---- Client-managed history ----
+
+
+async def test_history_absent_passes_none(client, admin_auth_header, api_key_header, monkeypatch):
+    domain = await _create_domain(client, admin_auth_header)
+    agent = await _create_agent(client, admin_auth_header, domain["id"])
+
+    fake_redis = _patch_fake_redis(monkeypatch)
+    enqueue_calls = _patch_enqueue(monkeypatch, fake_redis)
+
+    from app.modules.chat.service import sse_frame
+
+    async def _mock_relay(pubsub):
+        yield sse_frame({"type": "done", "reply": "ok", "session_id": "s", "iterations": 1, "stopped_on": "final_answer"})
+
+    monkeypatch.setattr("app.modules.chat.router.relay_job_events", _mock_relay)
+
+    resp = await client.post(
+        "/api/chat/stream",
+        json={"agent_id": agent["id"], "message": "hello"},
+        headers=api_key_header,
+    )
+    assert resp.status_code == 200
+    async for _ in resp.aiter_lines():
+        pass
+
+    assert len(enqueue_calls) == 1
+    assert enqueue_calls[0]["history"] is None
+
+
+async def test_history_present_threaded_to_job_as_plain_dicts(
+    client, admin_auth_header, api_key_header, monkeypatch
+):
+    domain = await _create_domain(client, admin_auth_header)
+    agent = await _create_agent(client, admin_auth_header, domain["id"])
+
+    fake_redis = _patch_fake_redis(monkeypatch)
+    enqueue_calls = _patch_enqueue(monkeypatch, fake_redis)
+
+    from app.modules.chat.service import sse_frame
+
+    async def _mock_relay(pubsub):
+        yield sse_frame({"type": "done", "reply": "ok", "session_id": "s", "iterations": 1, "stopped_on": "final_answer"})
+
+    monkeypatch.setattr("app.modules.chat.router.relay_job_events", _mock_relay)
+
+    resp = await client.post(
+        "/api/chat/stream",
+        json={
+            "agent_id": agent["id"],
+            "message": "hello",
+            "history": [
+                {"role": "user", "content": "Earlier question"},
+                {"role": "assistant", "content": "Earlier answer"},
+            ],
+        },
+        headers=api_key_header,
+    )
+    assert resp.status_code == 200
+    async for _ in resp.aiter_lines():
+        pass
+
+    assert len(enqueue_calls) == 1
+    assert enqueue_calls[0]["history"] == [
+        {"role": "user", "content": "Earlier question"},
+        {"role": "assistant", "content": "Earlier answer"},
+    ]
+
+
+async def test_history_bad_role_returns_422(client, admin_auth_header, api_key_header):
+    resp = await client.post(
+        "/api/chat/stream",
+        json={"agent_id": "a", "message": "hi", "history": [{"role": "system", "content": "x"}]},
+        headers=api_key_header,
+    )
+    assert resp.status_code == 422
+
+
+async def test_history_too_long_returns_422(client, admin_auth_header, api_key_header, monkeypatch):
+    fake_settings = type("S", (), {"MAX_CLIENT_HISTORY_MESSAGES": 2})()
+    monkeypatch.setattr("app.modules.chat.schemas.get_settings", lambda: fake_settings)
+
+    resp = await client.post(
+        "/api/chat/stream",
+        json={
+            "agent_id": "a",
+            "message": "hi",
+            "history": [{"role": "user", "content": str(i)} for i in range(3)],
+        },
+        headers=api_key_header,
+    )
+    assert resp.status_code == 422

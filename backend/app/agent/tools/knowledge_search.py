@@ -11,11 +11,15 @@ from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field
 
-from app.agent.tools.base import Tool
+from app.agent.core.types import Citation
+from app.agent.prompts.loader import PromptLoader
+from app.agent.tools.base import Tool, ToolOutput
 
 NO_RESULTS_MESSAGE = (
     "NO_RESULTS: The knowledge base returned no relevant results for this query."
 )
+
+SNIPPET_MAX_CHARS = 300
 
 
 class KnowledgeHit(BaseModel):
@@ -36,12 +40,26 @@ class KnowledgeSearchTool(Tool):
     domain-scoped search (no domain selection surfaced to the LLM). When
     multiple domains are configured, the LLM must pick which domain to
     search via the ``domain`` parameter (identified by slug).
+
+    One tool instance corresponds to one agent run: it holds a per-run
+    citation registry (``[n]`` markers minted across every ``execute()``
+    call on this instance), so callers must build a fresh instance per
+    request rather than reusing one across runs.
     """
 
-    def __init__(self, searcher: KnowledgeSearcher, domains: list[dict[str, str]], limit: int = 5):
+    def __init__(
+        self,
+        searcher: KnowledgeSearcher,
+        domains: list[dict[str, str]],
+        limit: int = 5,
+        prompt_loader: PromptLoader | None = None,
+    ):
         self._searcher = searcher
         self._domains = domains
         self._limit = limit
+        self._by_source: dict[str, Citation] = {}
+        self._next_marker = 1
+        self._prompt_fragment = (prompt_loader or PromptLoader()).render("citations")
 
     @property
     def name(self) -> str:
@@ -80,7 +98,11 @@ class KnowledgeSearchTool(Tool):
             "required": required,
         }
 
-    async def execute(self, **kwargs: Any) -> str:
+    @property
+    def prompt_fragment(self) -> str:
+        return self._prompt_fragment
+
+    async def execute(self, **kwargs: Any) -> ToolOutput:
         query = kwargs["query"]
 
         if len(self._domains) == 1:
@@ -90,14 +112,44 @@ class KnowledgeSearchTool(Tool):
             match = next((d for d in self._domains if d["slug"] == slug), None)
             if match is None:
                 valid = ", ".join(sorted(d["slug"] for d in self._domains))
-                return f"Error: 'domain' must be one of: {valid}."
+                return ToolOutput(content=f"Error: 'domain' must be one of: {valid}.", citations=[])
             domain_id = match["id"]
 
         hits = await self._searcher.search(query, domain_id, self._limit)
         if not hits:
-            return NO_RESULTS_MESSAGE
-        lines = [
-            f"{i}. {hit.content} (score: {hit.score:.3f})"
-            for i, hit in enumerate(hits, start=1)
-        ]
-        return "\n".join(lines)
+            return ToolOutput(content=NO_RESULTS_MESSAGE, citations=[])
+
+        call_citations: list[Citation] = []
+        seen_in_call: set[str] = set()
+        blocks: list[str] = []
+        for hit in hits:
+            document_id = hit.metadata.get("document_id")
+            if document_id is not None:
+                source_id = f"{document_id}:{hit.metadata.get('chunk_index', 0)}"
+            else:
+                source_id = hit.content
+
+            citation = self._by_source.get(source_id)
+            if citation is None:
+                citation = Citation(
+                    marker=self._next_marker,
+                    source_id=source_id,
+                    title=hit.metadata.get("filename", ""),
+                    snippet=hit.content[:SNIPPET_MAX_CHARS],
+                    score=hit.score,
+                    metadata=dict(hit.metadata),
+                )
+                self._next_marker += 1
+                self._by_source[source_id] = citation
+
+            if source_id not in seen_in_call:
+                seen_in_call.add(source_id)
+                call_citations.append(citation)
+
+            if citation.title:
+                header = f"[{citation.marker}] {citation.title} (score: {hit.score:.3f})"
+            else:
+                header = f"[{citation.marker}] (score: {hit.score:.3f})"
+            blocks.append(f"{header}\n{hit.content}")
+
+        return ToolOutput(content="\n\n".join(blocks), citations=call_citations)

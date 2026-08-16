@@ -8,10 +8,14 @@ import pytest
 from sqlalchemy import select
 
 from app.agent.core.types import LLMResponse, Role, ToolCall
-from app.agent.providers.ollama import OllamaProvider
-from app.agent.providers.openai_compat import OpenAICompatProvider
+from app.agent.providers.ollama import OllamaEmbeddingProvider, OllamaProvider
+from app.agent.providers.openai_compat import OpenAICompatEmbeddingProvider, OpenAICompatProvider
+from app.agent.tools.knowledge_search import KnowledgeHit
 from app.core.config import get_settings
 from app.modules.agent.models import Agent
+from app.modules.analytics.models import RequestLog
+from app.modules.apikey import service as apikey_service
+from app.modules.apikey.schemas import ApiKeyCreate
 from app.modules.conversation.models import ChatMessage
 from app.modules.domain.models import Domain
 from app.worker import tasks
@@ -104,6 +108,7 @@ async def test_process_chat_job_runs_agent_and_scopes_search(
         "session_id": "sess-1",
         "iterations": 2,
         "stopped_on": "final_answer",
+        "citations": [],
     }
     assert len(mock_llm.calls) == 2
 
@@ -112,6 +117,72 @@ async def test_process_chat_job_runs_agent_and_scopes_search(
     assert len(searcher.calls) == 1
     assert searcher.calls[0]["domain_id"] == str(domain_id)
     assert searcher.calls[0]["query"] == "hours"
+
+
+class _FakeSearcherWithHits:
+    """Stand-in for PgVectorKnowledgeSearcher that returns a scripted hit,
+    so a real Citation gets minted by KnowledgeSearchTool."""
+
+    def __init__(self, session_maker: Any, embedding_provider: Any, embedding_model: str):
+        pass
+
+    async def search(self, query: str, domain_id: str, limit: int):
+        return [
+            KnowledgeHit(
+                content="We are open 9-5, Monday through Friday.",
+                score=0.87,
+                metadata={"document_id": "doc-1", "chunk_index": 0, "filename": "handbook.pdf"},
+            )
+        ]
+
+
+async def test_process_chat_job_returns_and_persists_citations(session_maker, monkeypatch, mock_llm):
+    domain_id = await _seed_domain(session_maker)
+    agent_id = await _seed_agent(session_maker, domain_ids=[domain_id])
+
+    monkeypatch.setattr(tasks, "PgVectorKnowledgeSearcher", _FakeSearcherWithHits)
+    monkeypatch.setattr(tasks, "build_llm_provider", lambda agent, settings: mock_llm)
+
+    mock_llm.queue(
+        LLMResponse(
+            content="",
+            tool_calls=[ToolCall(id="call_0", name="knowledge_search", arguments={"query": "hours"})],
+        )
+    )
+    mock_llm.queue(LLMResponse(content="We are open 9-5. [1]", finish_reason="stop"))
+
+    ctx = await _make_ctx(session_maker)
+
+    result = await tasks.process_chat_job(
+        ctx,
+        agent_id=str(agent_id),
+        session_id="sess-cit",
+        text="What are your hours?",
+        metadata={},
+        platform="generic",
+    )
+
+    assert len(result["citations"]) == 1
+    citation = result["citations"][0]
+    assert citation["marker"] == 1
+    assert citation["title"] == "handbook.pdf"
+
+    async with session_maker() as session:
+        rows = list(
+            (
+                await session.execute(
+                    select(ChatMessage).where(
+                        ChatMessage.agent_id == agent_id, ChatMessage.session_id == "sess-cit"
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    user_row = next(r for r in rows if r.role == "user")
+    assistant_row = next(r for r in rows if r.role == "assistant")
+    assert user_row.citations is None
+    assert assistant_row.citations == result["citations"]
 
 
 async def test_process_chat_job_uses_agent_system_prompt_verbatim(session_maker, monkeypatch, mock_llm):
@@ -354,6 +425,98 @@ async def test_process_chat_job_history_truncated_to_limit(session_maker, monkey
     assert last_call_messages[3].content == "Question 3"
 
 
+async def test_process_chat_job_client_managed_history_skips_db_load_and_persist(
+    session_maker, monkeypatch, mock_llm
+):
+    """When ``history`` is supplied, the worker must use it as-is and must not
+    touch ``chat_messages`` at all (neither load nor append)."""
+    agent_id = await _seed_agent(session_maker)
+
+    monkeypatch.setattr(tasks, "PgVectorKnowledgeSearcher", _FakeSearcher)
+    monkeypatch.setattr(tasks, "build_llm_provider", lambda agent, settings: mock_llm)
+
+    async def _fail_if_called(*args, **kwargs):
+        raise AssertionError("load_history must not be called for client-managed history")
+
+    monkeypatch.setattr(tasks, "load_history", _fail_if_called)
+
+    ctx = await _make_ctx(session_maker)
+
+    mock_llm.queue(LLMResponse(content="Answer", finish_reason="stop"))
+    result = await tasks.process_chat_job(
+        ctx,
+        agent_id=str(agent_id),
+        session_id="sess-client-managed",
+        text="New question",
+        metadata={},
+        platform="generic",
+        history=[
+            {"role": "user", "content": "Earlier question"},
+            {"role": "assistant", "content": "Earlier answer"},
+        ],
+    )
+
+    assert result["reply"] == "Answer"
+    call_messages = mock_llm.calls[0]["messages"]
+    # [system, client-user, client-assistant, new-user]
+    assert len(call_messages) == 4
+    assert call_messages[1].role == Role.USER
+    assert call_messages[1].content == "Earlier question"
+    assert call_messages[2].role == Role.ASSISTANT
+    assert call_messages[2].content == "Earlier answer"
+    assert call_messages[3].content == "New question"
+
+    async with session_maker() as session:
+        rows = list(
+            (
+                await session.execute(
+                    select(ChatMessage).where(
+                        ChatMessage.agent_id == agent_id, ChatMessage.session_id == "sess-client-managed"
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert rows == []
+
+
+async def test_process_chat_job_history_none_keeps_server_managed_behavior(
+    session_maker, monkeypatch, mock_llm
+):
+    """Regression: omitting ``history`` (the default) must behave exactly like
+    before — DB load + persist."""
+    agent_id = await _seed_agent(session_maker)
+    monkeypatch.setattr(tasks, "PgVectorKnowledgeSearcher", _FakeSearcher)
+    monkeypatch.setattr(tasks, "build_llm_provider", lambda agent, settings: mock_llm)
+
+    ctx = await _make_ctx(session_maker)
+
+    mock_llm.queue(LLMResponse(content="Answer", finish_reason="stop"))
+    await tasks.process_chat_job(
+        ctx,
+        agent_id=str(agent_id),
+        session_id="sess-server-managed",
+        text="Question",
+        metadata={},
+        platform="generic",
+    )
+
+    async with session_maker() as session:
+        rows = list(
+            (
+                await session.execute(
+                    select(ChatMessage).where(
+                        ChatMessage.agent_id == agent_id, ChatMessage.session_id == "sess-server-managed"
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert [r.role for r in rows] == ["user", "assistant"]
+
+
 async def test_process_chat_job_does_not_persist_when_agent_raises(session_maker, monkeypatch, mock_llm):
     agent_id = await _seed_agent(session_maker)
     monkeypatch.setattr(tasks, "PgVectorKnowledgeSearcher", _FakeSearcher)
@@ -395,6 +558,117 @@ async def test_process_chat_job_does_not_persist_when_agent_raises(session_maker
     assert rows == []
 
 
+async def _seed_api_key(session_maker, name="App") -> uuid.UUID:
+    async with session_maker() as session:
+        api_key, _raw = await apikey_service.create_api_key(session, ApiKeyCreate(name=name))
+        return api_key.id
+
+
+async def test_process_chat_job_writes_request_log_on_success(session_maker, monkeypatch, mock_llm):
+    agent_id = await _seed_agent(session_maker)
+    api_key_id = await _seed_api_key(session_maker)
+    monkeypatch.setattr(tasks, "PgVectorKnowledgeSearcher", _FakeSearcher)
+    monkeypatch.setattr(tasks, "build_llm_provider", lambda agent, settings: mock_llm)
+
+    mock_llm.queue(
+        LLMResponse(content="Answer", finish_reason="stop", usage={"prompt_tokens": 12, "completion_tokens": 7})
+    )
+
+    ctx = await _make_ctx(session_maker)
+    ctx["job_id"] = "job-success-1"
+
+    await tasks.process_chat_job(
+        ctx,
+        agent_id=str(agent_id),
+        session_id="sess-log",
+        text="Hi",
+        metadata={"app_id": str(api_key_id), "app_name": "App"},
+        platform="generic",
+    )
+
+    async with session_maker() as session:
+        rows = list((await session.execute(select(RequestLog))).scalars().all())
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.job_id == "job-success-1"
+    assert row.api_key_id == api_key_id
+    assert row.agent_id == agent_id
+    assert row.session_id == "sess-log"
+    assert row.platform == "generic"
+    assert row.status == "success"
+    assert row.error_message is None
+    assert row.prompt_tokens == 12
+    assert row.completion_tokens == 7
+    assert row.total_tokens == 19
+    assert row.iterations == 1
+    assert row.stopped_on == "final_answer"
+    assert row.latency_ms >= 0
+
+
+async def test_process_chat_job_writes_request_log_on_failure(session_maker, monkeypatch, mock_llm):
+    agent_id = await _seed_agent(session_maker)
+    api_key_id = await _seed_api_key(session_maker)
+    monkeypatch.setattr(tasks, "PgVectorKnowledgeSearcher", _FakeSearcher)
+    monkeypatch.setattr(tasks, "build_llm_provider", lambda agent, settings: mock_llm)
+
+    class _ExplodingAgent:
+        async def run(self, text, history=None):
+            raise RuntimeError("boom" * 200)
+
+    async def _fake_build_agent(*args, **kwargs):
+        return _ExplodingAgent()
+
+    monkeypatch.setattr(tasks, "build_agent", _fake_build_agent)
+
+    ctx = await _make_ctx(session_maker)
+    ctx["job_id"] = "job-fail-1"
+
+    with pytest.raises(RuntimeError):
+        await tasks.process_chat_job(
+            ctx,
+            agent_id=str(agent_id),
+            session_id="sess-log-err",
+            text="Hi",
+            metadata={"app_id": str(api_key_id), "app_name": "App"},
+            platform="generic",
+        )
+
+    async with session_maker() as session:
+        rows = list((await session.execute(select(RequestLog))).scalars().all())
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.status == "error"
+    assert row.error_message is not None
+    assert len(row.error_message) == 500
+    assert row.prompt_tokens == 0
+    assert row.completion_tokens == 0
+
+
+async def test_process_chat_job_skips_request_log_without_app_id(session_maker, monkeypatch, mock_llm):
+    agent_id = await _seed_agent(session_maker)
+    monkeypatch.setattr(tasks, "PgVectorKnowledgeSearcher", _FakeSearcher)
+    monkeypatch.setattr(tasks, "build_llm_provider", lambda agent, settings: mock_llm)
+
+    mock_llm.queue(LLMResponse(content="Answer", finish_reason="stop"))
+
+    ctx = await _make_ctx(session_maker)
+
+    await tasks.process_chat_job(
+        ctx,
+        agent_id=str(agent_id),
+        session_id="sess-no-key",
+        text="Hi",
+        metadata={},
+        platform="generic",
+    )
+
+    async with session_maker() as session:
+        rows = list((await session.execute(select(RequestLog))).scalars().all())
+    assert rows == []
+
+
 def _make_agent_row(**overrides) -> Agent:
     defaults = dict(name="x", provider="ollama", model_name="qwen2.5", base_url=None, api_key=None)
     defaults.update(overrides)
@@ -418,9 +692,7 @@ def test_build_llm_provider_falls_back_to_settings_ollama_base_url():
 
 
 def test_build_llm_provider_returns_openai_compat_provider():
-    settings = get_settings().model_copy(
-        update={"OPENAI_BASE_URL": "http://settings-default.local/v1", "OPENAI_API_KEY": "sk-settings"}
-    )
+    settings = get_settings()
     agent = _make_agent_row(provider="openai", base_url="http://openai.local/v1", api_key="sk-test")
     provider = tasks.build_llm_provider(agent, settings)
     assert isinstance(provider, OpenAICompatProvider)
@@ -428,15 +700,76 @@ def test_build_llm_provider_returns_openai_compat_provider():
     assert provider.api_key == "sk-test"
 
 
-def test_build_llm_provider_openai_falls_back_to_settings_credentials():
-    settings = get_settings().model_copy(
-        update={"OPENAI_BASE_URL": "http://settings-default.local/v1", "OPENAI_API_KEY": "sk-settings"}
-    )
-    agent = _make_agent_row(provider="openai", base_url=None, api_key=None)
+def test_build_llm_provider_openai_defaults_to_public_api_when_base_url_blank():
+    """Credentials are per-agent config; only the public OpenAI URL is a constant."""
+    settings = get_settings()
+    agent = _make_agent_row(provider="openai", base_url=None, api_key="sk-test")
     provider = tasks.build_llm_provider(agent, settings)
     assert isinstance(provider, OpenAICompatProvider)
-    assert provider.base_url == "http://settings-default.local/v1"
-    assert provider.api_key == "sk-settings"
+    assert provider.base_url == tasks.OPENAI_PUBLIC_BASE_URL
+    assert provider.api_key == "sk-test"
+
+
+def test_build_llm_provider_openai_uses_empty_api_key_when_agent_has_none():
+    settings = get_settings()
+    agent = _make_agent_row(provider="openai", base_url="http://gateway.local/v1", api_key=None)
+    provider = tasks.build_llm_provider(agent, settings)
+    assert isinstance(provider, OpenAICompatProvider)
+    assert provider.api_key == ""
+
+
+def test_build_embedding_provider_defaults_to_ollama():
+    settings = get_settings().model_copy(
+        update={
+            "EMBEDDING_PROVIDER": "ollama",
+            "EMBEDDING_BASE_URL": "",
+            "OLLAMA_BASE_URL": "http://ollama.local",
+        }
+    )
+    provider = tasks.build_embedding_provider(settings)
+    assert isinstance(provider, OllamaEmbeddingProvider)
+    assert provider.base_url == "http://ollama.local"
+
+
+def test_build_embedding_provider_uses_embedding_base_url_over_ollama_base_url():
+    """EMBEDDING_BASE_URL lets embeddings live on a different host than chat."""
+    settings = get_settings().model_copy(
+        update={
+            "EMBEDDING_PROVIDER": "ollama",
+            "OLLAMA_BASE_URL": "http://chat.local",
+            "EMBEDDING_BASE_URL": "http://embeddings.local",
+        }
+    )
+    provider = tasks.build_embedding_provider(settings)
+    assert provider.base_url == "http://embeddings.local"
+
+
+def test_build_embedding_provider_returns_openai_compat():
+    settings = get_settings().model_copy(
+        update={
+            "EMBEDDING_PROVIDER": "openai",
+            "EMBEDDING_BASE_URL": "http://openai.local/v1",
+            "EMBEDDING_API_KEY": "sk-embed",
+        }
+    )
+    provider = tasks.build_embedding_provider(settings)
+    assert isinstance(provider, OpenAICompatEmbeddingProvider)
+    assert provider.base_url == "http://openai.local/v1"
+    assert provider.api_key == "sk-embed"
+
+
+def test_build_embedding_provider_openai_defaults_to_public_api():
+    settings = get_settings().model_copy(
+        update={"EMBEDDING_PROVIDER": "openai", "EMBEDDING_BASE_URL": "", "EMBEDDING_API_KEY": "sk-embed"}
+    )
+    provider = tasks.build_embedding_provider(settings)
+    assert provider.base_url == tasks.OPENAI_PUBLIC_BASE_URL
+
+
+def test_build_embedding_provider_raises_on_unknown_provider():
+    settings = get_settings().model_copy(update={"EMBEDDING_PROVIDER": "bogus"})
+    with pytest.raises(ValueError):
+        tasks.build_embedding_provider(settings)
 
 
 def test_build_llm_provider_raises_on_unknown_provider():

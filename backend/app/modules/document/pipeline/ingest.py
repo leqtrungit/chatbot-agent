@@ -50,7 +50,13 @@ async def ingest_document(
         path = service.file_path_for(document.id, extension)
         text = extract_text(str(path), document.mime_type)
         chunks = chunk_text(text, size=chunk_size, overlap=chunk_overlap)
-        vectors = await embed_chunks(chunks, embedding_provider, model, batch_size=batch_size)
+        vectors = await embed_chunks(
+            chunks,
+            embedding_provider,
+            model,
+            batch_size=batch_size,
+            expected_dim=settings.EMBEDDING_DIM,
+        )
 
         for index, (content, vector) in enumerate(zip(chunks, vectors)):
             session.add(
@@ -64,7 +70,10 @@ async def ingest_document(
 
         document.status = DocumentStatus.COMPLETED.value
         await session.commit()
-    except Exception as exc:  # noqa: BLE001 - persist failure state then re-raise
+    # Deliberately swallowed, not re-raised: the failure belongs on the document
+    # row (status + error, visible via the documents API/UI), and re-raising
+    # would only make arq retry a document that will fail identically.
+    except Exception as exc:  # noqa: BLE001
         await session.rollback()
         document = await session.get(Document, document_id)
         document.status = DocumentStatus.FAILED.value
