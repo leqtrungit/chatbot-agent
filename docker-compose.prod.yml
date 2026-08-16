@@ -5,13 +5,13 @@
 #
 # Ingress is out of scope here — point whatever you use at these two:
 #
-#   127.0.0.1:8000   the chat/webhook API and admin API
-#   127.0.0.1:3000   the admin UI (also proxies its own /api/* to api:8000)
+#   :8000   the chat/webhook API and admin API
+#   :3000   the admin UI (also proxies its own /api/* to api:8000)
 #
-# Both bind to loopback only, so a proxy or tunnel running on the host reaches
-# them while nothing on the network can. Drop the `127.0.0.1:` prefix to expose
-# a port on every interface — then the firewall is the only thing protecting
-# it. Postgres and Redis stay unpublished either way.
+# Both bind 0.0.0.0, so they are reachable from anywhere the host is — the
+# firewall is what keeps them private. Change the prefix to `127.0.0.1:` to
+# restrict them to a proxy running on the host itself. Postgres and Redis stay
+# unpublished either way.
 #
 # pgadmin is intentionally absent — don't expose it; reach the database over an
 # SSH tunnel when you need to.
@@ -73,7 +73,7 @@ services:
     # No `command:` — backend/Dockerfile's CMD already runs uvicorn on :8000.
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8000:8000"
+      - "0.0.0.0:8000:8000"
     environment:
       <<: *backend-env
       ADMIN_USERNAME: ${ADMIN_USERNAME}
@@ -117,7 +117,7 @@ services:
     build: ./frontend
     restart: unless-stopped
     ports:
-      - "127.0.0.1:3000:3000"
+      - "0.0.0.0:3000:3000"
     depends_on:
       - api
 
