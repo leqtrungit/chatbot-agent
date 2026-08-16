@@ -8,8 +8,8 @@ import pytest
 from sqlalchemy import select
 
 from app.agent.core.types import LLMResponse, Role, ToolCall
-from app.agent.providers.ollama import OllamaProvider
-from app.agent.providers.openai_compat import OpenAICompatProvider
+from app.agent.providers.ollama import OllamaEmbeddingProvider, OllamaProvider
+from app.agent.providers.openai_compat import OpenAICompatEmbeddingProvider, OpenAICompatProvider
 from app.agent.tools.knowledge_search import KnowledgeHit
 from app.core.config import get_settings
 from app.modules.agent.models import Agent
@@ -692,9 +692,7 @@ def test_build_llm_provider_falls_back_to_settings_ollama_base_url():
 
 
 def test_build_llm_provider_returns_openai_compat_provider():
-    settings = get_settings().model_copy(
-        update={"OPENAI_BASE_URL": "http://settings-default.local/v1", "OPENAI_API_KEY": "sk-settings"}
-    )
+    settings = get_settings()
     agent = _make_agent_row(provider="openai", base_url="http://openai.local/v1", api_key="sk-test")
     provider = tasks.build_llm_provider(agent, settings)
     assert isinstance(provider, OpenAICompatProvider)
@@ -702,15 +700,76 @@ def test_build_llm_provider_returns_openai_compat_provider():
     assert provider.api_key == "sk-test"
 
 
-def test_build_llm_provider_openai_falls_back_to_settings_credentials():
-    settings = get_settings().model_copy(
-        update={"OPENAI_BASE_URL": "http://settings-default.local/v1", "OPENAI_API_KEY": "sk-settings"}
-    )
-    agent = _make_agent_row(provider="openai", base_url=None, api_key=None)
+def test_build_llm_provider_openai_defaults_to_public_api_when_base_url_blank():
+    """Credentials are per-agent config; only the public OpenAI URL is a constant."""
+    settings = get_settings()
+    agent = _make_agent_row(provider="openai", base_url=None, api_key="sk-test")
     provider = tasks.build_llm_provider(agent, settings)
     assert isinstance(provider, OpenAICompatProvider)
-    assert provider.base_url == "http://settings-default.local/v1"
-    assert provider.api_key == "sk-settings"
+    assert provider.base_url == tasks.OPENAI_PUBLIC_BASE_URL
+    assert provider.api_key == "sk-test"
+
+
+def test_build_llm_provider_openai_uses_empty_api_key_when_agent_has_none():
+    settings = get_settings()
+    agent = _make_agent_row(provider="openai", base_url="http://gateway.local/v1", api_key=None)
+    provider = tasks.build_llm_provider(agent, settings)
+    assert isinstance(provider, OpenAICompatProvider)
+    assert provider.api_key == ""
+
+
+def test_build_embedding_provider_defaults_to_ollama():
+    settings = get_settings().model_copy(
+        update={
+            "EMBEDDING_PROVIDER": "ollama",
+            "EMBEDDING_BASE_URL": "",
+            "OLLAMA_BASE_URL": "http://ollama.local",
+        }
+    )
+    provider = tasks.build_embedding_provider(settings)
+    assert isinstance(provider, OllamaEmbeddingProvider)
+    assert provider.base_url == "http://ollama.local"
+
+
+def test_build_embedding_provider_uses_embedding_base_url_over_ollama_base_url():
+    """EMBEDDING_BASE_URL lets embeddings live on a different host than chat."""
+    settings = get_settings().model_copy(
+        update={
+            "EMBEDDING_PROVIDER": "ollama",
+            "OLLAMA_BASE_URL": "http://chat.local",
+            "EMBEDDING_BASE_URL": "http://embeddings.local",
+        }
+    )
+    provider = tasks.build_embedding_provider(settings)
+    assert provider.base_url == "http://embeddings.local"
+
+
+def test_build_embedding_provider_returns_openai_compat():
+    settings = get_settings().model_copy(
+        update={
+            "EMBEDDING_PROVIDER": "openai",
+            "EMBEDDING_BASE_URL": "http://openai.local/v1",
+            "EMBEDDING_API_KEY": "sk-embed",
+        }
+    )
+    provider = tasks.build_embedding_provider(settings)
+    assert isinstance(provider, OpenAICompatEmbeddingProvider)
+    assert provider.base_url == "http://openai.local/v1"
+    assert provider.api_key == "sk-embed"
+
+
+def test_build_embedding_provider_openai_defaults_to_public_api():
+    settings = get_settings().model_copy(
+        update={"EMBEDDING_PROVIDER": "openai", "EMBEDDING_BASE_URL": "", "EMBEDDING_API_KEY": "sk-embed"}
+    )
+    provider = tasks.build_embedding_provider(settings)
+    assert provider.base_url == tasks.OPENAI_PUBLIC_BASE_URL
+
+
+def test_build_embedding_provider_raises_on_unknown_provider():
+    settings = get_settings().model_copy(update={"EMBEDDING_PROVIDER": "bogus"})
+    with pytest.raises(ValueError):
+        tasks.build_embedding_provider(settings)
 
 
 def test_build_llm_provider_raises_on_unknown_provider():

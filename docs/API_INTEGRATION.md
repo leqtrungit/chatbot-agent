@@ -355,7 +355,7 @@ Các giá trị dưới đây là **mặc định trong code** (`app/core/config
 | Trần `limit` khi gọi `GET /api/conversations/.../messages` | 200 (cứng trong router, không đổi qua config) | |
 | Số phần tử tối đa trong `history` (client-managed) | 200 (`MAX_CLIENT_HISTORY_MESSAGES`) | Vượt quá → `422` |
 | Độ dài tối đa của `message`/`text` | **Không giới hạn rõ ràng trong code đã đọc** | Cần xác nhận với đội core — có thể bị giới hạn gián tiếp bởi context window của model LLM cấu hình cho agent |
-| Timeout xử lý job (LLM, tool calls...) | **Không thấy timeout tường minh ở tầng webhook/job trong code đã đọc** (`AGENT_MAX_ITERATIONS` giới hạn số vòng lặp tool-call, mặc định 10, nhưng không phải timeout theo thời gian) | Cần xác nhận với đội core nếu cần SLA thời gian phản hồi cụ thể |
+| Timeout xử lý job (LLM, tool calls...) | **Không thấy timeout tường minh ở tầng webhook/job trong code đã đọc** (`AgentBuilder` giới hạn số vòng lặp tool-call ở 10, nhưng không phải timeout theo thời gian) | Cần xác nhận với đội core nếu cần SLA thời gian phản hồi cụ thể |
 | Job hết hạn trong Redis (TTL kết quả) | **Không xác định được từ code đọc được** (phụ thuộc cấu hình arq mặc định) | Nếu poll quá muộn, `GET /api/jobs/{job_id}` có thể trả `404 Job not found` dù job từng chạy — nên poll trong thời gian hợp lý sau khi enqueue |
 
 ---

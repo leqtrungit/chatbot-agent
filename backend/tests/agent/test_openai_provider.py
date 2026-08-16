@@ -535,3 +535,22 @@ async def test_chat_stream_parses_trailing_usage_only_chunk():
     assert final.response is not None
     assert final.response.content == "Hello!"
     assert final.response.usage == {"prompt_tokens": 12, "completion_tokens": 6}
+
+
+async def test_chat_omits_auth_header_when_api_key_blank():
+    """Agents may point at a gateway that authenticates by network, not Bearer."""
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["headers"] = dict(request.headers)
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}]},
+        )
+
+    transport = httpx.MockTransport(handler)
+    provider = OpenAICompatProvider(base_url="http://gateway.local/v1", api_key="")
+    provider._client = httpx.AsyncClient(transport=transport, base_url="http://gateway.local/v1")
+
+    await provider.chat([Message(role=Role.USER, content="Hi")], model="m")
+    assert "authorization" not in captured["headers"]

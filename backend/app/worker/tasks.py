@@ -20,7 +20,7 @@ from app.agent import AgentBuilder, KnowledgeSearchTool
 from app.agent.core.types import AgentResponse
 from app.agent.providers.base import EmbeddingProvider, LLMProvider
 from app.agent.providers.ollama import OllamaEmbeddingProvider, OllamaProvider
-from app.agent.providers.openai_compat import OpenAICompatProvider
+from app.agent.providers.openai_compat import OpenAICompatEmbeddingProvider, OpenAICompatProvider
 from app.agent.tools.knowledge_search import KnowledgeSearcher
 from app.channels.base import OutgoingMessage
 from app.channels.registry import ChannelNotRegisteredError, get_channel_registry
@@ -76,18 +76,31 @@ async def _write_request_log(
         )
 
 
+OPENAI_PUBLIC_BASE_URL = "https://api.openai.com/v1"
+
+
 def build_llm_provider(agent: AgentModel, settings: Settings) -> LLMProvider:
+    """Chat credentials are per-agent config; only Ollama has a deploy-time
+    default, since the same host also serves embeddings (see
+    ``build_embedding_provider``)."""
     if agent.provider == "ollama":
         return OllamaProvider(agent.base_url or settings.OLLAMA_BASE_URL)
     if agent.provider == "openai":
-        return OpenAICompatProvider(
-            agent.base_url or settings.OPENAI_BASE_URL, agent.api_key or settings.OPENAI_API_KEY
-        )
+        return OpenAICompatProvider(agent.base_url or OPENAI_PUBLIC_BASE_URL, agent.api_key or "")
     raise ValueError(f"Unknown provider: {agent.provider!r}")
 
 
 def build_embedding_provider(settings: Settings) -> EmbeddingProvider:
-    return OllamaEmbeddingProvider(settings.OLLAMA_BASE_URL)
+    """Embeddings are deployment-wide config, not per-agent: every chunk and
+    every query share the one ``document_chunks.embedding`` vector space."""
+    base_url = settings.EMBEDDING_BASE_URL
+    if settings.EMBEDDING_PROVIDER == "ollama":
+        return OllamaEmbeddingProvider(base_url or settings.OLLAMA_BASE_URL)
+    if settings.EMBEDDING_PROVIDER == "openai":
+        return OpenAICompatEmbeddingProvider(
+            base_url or OPENAI_PUBLIC_BASE_URL, settings.EMBEDDING_API_KEY
+        )
+    raise ValueError(f"Unknown embedding provider: {settings.EMBEDDING_PROVIDER!r}")
 
 
 async def build_agent(
