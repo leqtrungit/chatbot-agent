@@ -1,0 +1,134 @@
+# Production stack, reached only through a Cloudflare Tunnel.
+#
+# Deliberately publishes NO host ports — not even 443. `cloudflared` dials out
+# to Cloudflare and routes requests back over that connection, reaching services
+# by their compose DNS name on the internal network. The server can firewall off
+# all inbound traffic except SSH.
+#
+#   cp .env.prod.example .env    # sets COMPOSE_FILE, so no flags are needed
+#   docker compose up -d --build
+#
+# Configure two public hostnames in the Cloudflare Zero Trust dashboard
+# (Networks -> Tunnels -> your tunnel -> Public Hostnames):
+#
+#   api.example.com    -> http://api:8000
+#   admin.example.com  -> http://frontend:3000     (put Cloudflare Access on this one)
+#
+# pgadmin is intentionally absent: never expose it, and reach the database with
+# `cloudflared access tcp` or an SSH tunnel when you actually need it.
+
+name: chatbot-agent
+
+x-backend-env: &backend-env
+  DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+  REDIS_URL: redis://redis:6379/0
+  OLLAMA_BASE_URL: ${OLLAMA_BASE_URL}
+  EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-ollama}
+  EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-}
+  EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+  EMBEDDING_MODEL: ${EMBEDDING_MODEL:-nomic-embed-text}
+  EMBEDDING_DIM: ${EMBEDDING_DIM:-768}
+  CHAT_HISTORY_LIMIT: ${CHAT_HISTORY_LIMIT:-20}
+  MAX_CLIENT_HISTORY_MESSAGES: ${MAX_CLIENT_HISTORY_MESSAGES:-200}
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # One-shot: brings the schema up to date before api/worker are allowed to
+  # start, so a deploy can never serve traffic against a stale database.
+  migrate:
+    build: ./backend
+    command: alembic upgrade head
+    restart: "no"
+    environment: *backend-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    build: ./backend
+    # No `command:` — backend/Dockerfile's CMD already runs uvicorn on :8000.
+    restart: unless-stopped
+    environment:
+      <<: *backend-env
+      ADMIN_USERNAME: ${ADMIN_USERNAME}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      CORS_ORIGINS: ${CORS_ORIGINS}
+      RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-60}
+      RATE_LIMIT_SESSION_PER_MINUTE: ${RATE_LIMIT_SESSION_PER_MINUTE:-20}
+    volumes:
+      # Shared with the worker: the API writes the uploaded file, the worker
+      # reads it back during ingestion. Two separate volumes = every ingest
+      # fails with "file not found".
+      - uploads:/app/data/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  worker:
+    build: ./backend
+    command: arq app.worker.settings.WorkerSettings
+    restart: unless-stopped
+    environment: *backend-env
+    volumes:
+      - uploads:/app/data/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  frontend:
+    # No deployment-specific build args. The UI calls /api/* on its own origin
+    # and server.js proxies that to http://api:8000 — an internal name baked in
+    # by frontend/Dockerfile's default, so the same image works on any host and
+    # no API URL reaches the browser.
+    build: ./frontend
+    restart: unless-stopped
+    depends_on:
+      - api
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN}
+    depends_on:
+      - api
+      - frontend
+
+volumes:
+  postgres_data:
+  redis_data:
+  uploads:

@@ -36,8 +36,15 @@ export interface ChatStreamEvent {
   citations?: Citation[];
 }
 
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+// Empty by default: requests go to /api/* on this origin, which next.config.ts
+// rewrites to the backend at runtime. Keeps the built bundle portable — nothing
+// about the deployment is compiled into it.
+//
+// Setting NEXT_PUBLIC_API_URL bypasses the proxy and calls the backend
+// cross-origin instead, which then needs that origin in the backend's
+// CORS_ORIGINS. It is baked in at build time like every NEXT_PUBLIC_* value, so
+// changing it requires a rebuild, not a restart.
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "";
 
 export class ApiError extends Error {
   status: number;
