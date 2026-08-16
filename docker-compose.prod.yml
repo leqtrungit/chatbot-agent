@@ -5,8 +5,8 @@
 # by their compose DNS name on the internal network. The server can firewall off
 # all inbound traffic except SSH.
 #
-#   cp .env.prod.example .env    # sets COMPOSE_FILE, so no flags are needed
-#   docker compose up -d --build
+#   cp .env.example .env         # fill it in, uncomment COMPOSE_FILE
+#   docker compose up -d --build # no -f / --env-file needed
 #
 # Configure two public hostnames in the Cloudflare Zero Trust dashboard
 # (Networks -> Tunnels -> your tunnel -> Public Hostnames):
