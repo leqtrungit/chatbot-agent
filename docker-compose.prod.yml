@@ -1,21 +1,19 @@
-# Production stack, reached only through a Cloudflare Tunnel.
-#
-# Deliberately publishes NO host ports — not even 443. `cloudflared` dials out
-# to Cloudflare and routes requests back over that connection, reaching services
-# by their compose DNS name on the internal network. The server can firewall off
-# all inbound traffic except SSH.
+# Production stack.
 #
 #   cp .env.example .env         # fill it in, uncomment COMPOSE_FILE
 #   docker compose up -d --build # no -f / --env-file needed
 #
-# Configure two public hostnames in the Cloudflare Zero Trust dashboard
-# (Networks -> Tunnels -> your tunnel -> Public Hostnames):
+# Publishes no host ports. Ingress is deliberately out of scope here — put
+# whatever you use in front of these two, reachable on the compose network:
 #
-#   api.example.com    -> http://api:8000
-#   admin.example.com  -> http://frontend:3000     (put Cloudflare Access on this one)
+#   api:8000        the chat/webhook API and admin API
+#   frontend:3000   the admin UI (also proxies its own /api/* to api:8000)
 #
-# pgadmin is intentionally absent: never expose it, and reach the database with
-# `cloudflared access tcp` or an SSH tunnel when you actually need it.
+# If your proxy runs outside this project, either attach it to the network this
+# stack creates, or add a `ports:` mapping to the service you want exposed.
+#
+# pgadmin is intentionally absent — don't expose it; reach the database over an
+# SSH tunnel when you need to.
 
 name: chatbot-agent
 
@@ -117,16 +115,6 @@ services:
     restart: unless-stopped
     depends_on:
       - api
-
-  cloudflared:
-    image: cloudflare/cloudflared:latest
-    restart: unless-stopped
-    command: tunnel --no-autoupdate run
-    environment:
-      TUNNEL_TOKEN: ${TUNNEL_TOKEN}
-    depends_on:
-      - api
-      - frontend
 
 volumes:
   postgres_data:
