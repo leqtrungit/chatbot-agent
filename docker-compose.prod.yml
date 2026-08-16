@@ -3,14 +3,15 @@
 #   cp .env.example .env         # fill it in, uncomment COMPOSE_FILE
 #   docker compose up -d --build # no -f / --env-file needed
 #
-# Publishes no host ports. Ingress is deliberately out of scope here — put
-# whatever you use in front of these two, reachable on the compose network:
+# Ingress is out of scope here — point whatever you use at these two:
 #
-#   api:8000        the chat/webhook API and admin API
-#   frontend:3000   the admin UI (also proxies its own /api/* to api:8000)
+#   127.0.0.1:8000   the chat/webhook API and admin API
+#   127.0.0.1:3000   the admin UI (also proxies its own /api/* to api:8000)
 #
-# If your proxy runs outside this project, either attach it to the network this
-# stack creates, or add a `ports:` mapping to the service you want exposed.
+# Both bind to loopback only, so a proxy or tunnel running on the host reaches
+# them while nothing on the network can. Drop the `127.0.0.1:` prefix to expose
+# a port on every interface — then the firewall is the only thing protecting
+# it. Postgres and Redis stay unpublished either way.
 #
 # pgadmin is intentionally absent — don't expose it; reach the database over an
 # SSH tunnel when you need to.
@@ -71,6 +72,8 @@ services:
     build: ./backend
     # No `command:` — backend/Dockerfile's CMD already runs uvicorn on :8000.
     restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
     environment:
       <<: *backend-env
       ADMIN_USERNAME: ${ADMIN_USERNAME}
@@ -113,6 +116,8 @@ services:
     # no API URL reaches the browser.
     build: ./frontend
     restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000"
     depends_on:
       - api
 
