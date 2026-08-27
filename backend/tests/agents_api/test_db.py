@@ -82,7 +82,7 @@ async def test_create_agent_persists_to_db(
         agent_id = resp.json()["id"]
 
     # Verify in database directly
-    agent = await session.get(Agent, agent_id)
+    agent = await db_session.get(Agent, agent_id)
     assert agent is not None
     assert agent.org_id == org_id
     assert agent.name == "Persistent Bot"
@@ -116,7 +116,7 @@ async def test_unique_agent_name_per_org(db_session: AsyncSession) -> None:
         assert resp.status_code == 409
 
     # Create same name in org2 (should succeed)
-    app2 = _make_app(session, _principal("org2"))
+    app2 = _make_app(db_session, _principal("org2"))
     async with AsyncClient(
         transport=ASGITransport(app=app2), base_url="http://test"
     ) as client:
@@ -150,7 +150,7 @@ async def test_cross_org_agent_not_accessible(
         agent_id = resp.json()["id"]
 
     # Try to access from org2
-    app2 = _make_app(session, _principal("org2"))
+    app2 = _make_app(db_session, _principal("org2"))
     async with AsyncClient(
         transport=ASGITransport(app=app2), base_url="http://test"
     ) as client:
@@ -182,11 +182,11 @@ async def test_set_agent_knowledge_bases_same_org(
         # Link to KBs
         set_resp = await client.put(
             f"/v2/orgs/{org_id}/agents/{agent_id}/knowledge-bases",
-            json={"knowledge_base_ids": [kb1.id, kb2.id]},
+            json={"knowledge_base_ids": [str(kb1.id), str(kb2.id)]},
         )
         assert set_resp.status_code == 200
         assert sorted(set_resp.json()["knowledge_base_ids"]) == sorted(
-            [kb1.id, kb2.id]
+            [str(kb1.id), str(kb2.id)]
         )
 
     # Verify in DB
@@ -221,11 +221,11 @@ async def test_set_agent_knowledge_bases_cross_org_404(
         # Try to link to KB from org2
         set_resp = await client.put(
             f"/v2/orgs/{org1_id}/agents/{agent_id}/knowledge-bases",
-            json={"knowledge_base_ids": [kb2.id]},
+            json={"knowledge_base_ids": [str(kb2.id)]},
         )
         # Should return 404 with message indicating missing KB ID
         assert set_resp.status_code == 404
-        assert kb2.id in set_resp.json()["detail"]
+        assert str(kb2.id) in set_resp.json()["detail"]
 
 
 @pytest.mark.asyncio
@@ -258,7 +258,7 @@ async def test_update_agent_in_db(db_session: AsyncSession) -> None:
         assert update_resp.status_code == 200
 
     # Verify in DB
-    agent = await session.get(Agent, agent_id)
+    agent = await db_session.get(Agent, agent_id)
     assert agent.temperature == 0.9
     assert agent.max_iterations == 3
 
@@ -288,6 +288,6 @@ async def test_deactivate_agent_in_db(db_session: AsyncSession) -> None:
         assert deactivate_resp.json()["is_active"] is False
 
     # Verify in DB
-    agent = await session.get(Agent, agent_id)
+    agent = await db_session.get(Agent, agent_id)
     assert agent.is_active is False
     assert agent is not None  # Row still exists (soft delete)

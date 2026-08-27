@@ -55,14 +55,18 @@ async def _create_api_key(
     return api_key, raw_key
 
 
-def _app_with_principal(app: FastAPI, principal: TenantPrincipal) -> FastAPI:
-    """Override require_org_member with a specific principal."""
+def _make_app(
+    db_session: AsyncSession, principal: TenantPrincipal
+) -> FastAPI:
+    """Create app with DB session and principal overrides."""
+    app = create_app()
+    app.dependency_overrides[get_session] = lambda: db_session
     app.dependency_overrides[require_org_member] = lambda: principal
     return app
 
 
 async def test_admin_org_a_cannot_list_keys_in_org_b(
-    db_session: AsyncSession, session_maker
+    db_session: AsyncSession
 ) -> None:
     """Admin of org A requesting /v2/orgs/{org_b_id}/api-keys gets 404."""
     # Create two orgs
@@ -73,11 +77,10 @@ async def test_admin_org_a_cannot_list_keys_in_org_b(
     await _create_api_key(db_session, org_b.id, "Key in B")
 
     # Create app with admin principal for org A
-    app = create_app()
     principal_a = TenantPrincipal(
         user_id="admin_a", email=None, org_alias="acme", role="admin"
     )
-    _app_with_principal(app, principal_a)
+    app = _make_app(db_session, principal_a)
 
     # Try to list keys in org B (should get 404)
     async with AsyncClient(
@@ -89,7 +92,7 @@ async def test_admin_org_a_cannot_list_keys_in_org_b(
 
 
 async def test_admin_org_a_cannot_revoke_key_in_org_b(
-    db_session: AsyncSession, session_maker
+    db_session: AsyncSession
 ) -> None:
     """Admin of org A cannot revoke a key in org B (404)."""
     # Create two orgs
@@ -100,11 +103,10 @@ async def test_admin_org_a_cannot_revoke_key_in_org_b(
     key_b, _ = await _create_api_key(db_session, org_b.id, "Key in B")
 
     # Create app with admin principal for org A
-    app = create_app()
     principal_a = TenantPrincipal(
         user_id="admin_a", email=None, org_alias="acme", role="admin"
     )
-    _app_with_principal(app, principal_a)
+    app = _make_app(db_session, principal_a)
 
     # Try to revoke key in org B (should get 404)
     async with AsyncClient(
@@ -116,18 +118,17 @@ async def test_admin_org_a_cannot_revoke_key_in_org_b(
 
 
 async def test_create_key_in_org_a_admin_org_a_can_list_it(
-    db_session: AsyncSession, session_maker
+    db_session: AsyncSession
 ) -> None:
     """Admin of org A can create and list keys in org A."""
     # Create org A
     org_a = await _create_org(db_session, "ACME", "acme")
 
     # Create app with admin principal for org A
-    app = create_app()
     principal_a = TenantPrincipal(
         user_id="admin_a", email=None, org_alias="acme", role="admin"
     )
-    _app_with_principal(app, principal_a)
+    app = _make_app(db_session, principal_a)
 
     # Create a key
     async with AsyncClient(
@@ -158,7 +159,7 @@ async def test_create_key_in_org_a_admin_org_a_can_list_it(
 
 
 async def test_suspended_org_blocks_access(
-    db_session: AsyncSession, session_maker
+    db_session: AsyncSession
 ) -> None:
     """Requests to a suspended org return 403."""
     # Create org and immediately suspend it
@@ -168,11 +169,10 @@ async def test_suspended_org_blocks_access(
     await db_session.commit()
 
     # Create app with principal for that org
-    app = create_app()
     principal = TenantPrincipal(
         user_id="admin", email=None, org_alias="suspended", role="admin"
     )
-    _app_with_principal(app, principal)
+    app = _make_app(db_session, principal)
 
     # Try to access - should get 403
     async with AsyncClient(
