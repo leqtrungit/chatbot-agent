@@ -120,7 +120,7 @@ jobs:
       - name: Verify JWKS endpoint
         if: steps.realm_check.outputs.realm_exists == 'true'
         run: |
-          max_attempts=30
+          max_attempts=60
           attempt=0
           while [ $attempt -lt $max_attempts ]; do
             # `|| true`: steps run under bash -e — without it the first
@@ -136,12 +136,17 @@ jobs:
             fi
 
             attempt=$((attempt + 1))
+            if [ $((attempt % 10)) -eq 0 ]; then
+              echo "attempt $attempt: http_code=$http_code"
+            fi
             if [ $attempt -lt $max_attempts ]; then
-              sleep 1
+              sleep 2
             fi
           done
 
-          echo "✗ JWKS endpoint did not return valid response"
+          echo "✗ JWKS endpoint did not return valid response (last http_code=$http_code)"
+          echo "--- keycloak container logs (tail 80) ---"
+          docker logs keycloak 2>&1 | tail -80
           exit 1
 
       - name: Skip Keycloak test
