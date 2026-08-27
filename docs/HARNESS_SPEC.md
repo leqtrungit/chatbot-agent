@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Trạng thái** | 🔍 v0.1 DRAFT — đang review, chưa chốt |
+| **Trạng thái** | 🔍 v0.2 DRAFT — đang review (v0.2: Keycloak cho authn/authz P1–P2; bỏ arq, scheduling thuần Postgres; thêm §8 Stack ADR) |
 | **Thay thế** | Định hướng lại toàn bộ sản phẩm; `PRODUCT_OVERVIEW.md` trở thành tài liệu tham chiếu v1 (legacy) |
 | **Quy ước đọc** | Mục đánh dấu `[CẦN CHỐT]` là quyết định đang chờ owner duyệt. FR/NFR có ID để mọi task implementation trace ngược về đây. |
 
@@ -22,7 +22,8 @@ Ba tinh thần cốt lõi, theo thứ tự ưu tiên khi phải đánh đổi:
 
 - **Run-centric**: mọi lần agent chạy đều là một Run trong DB. Không có đường tắt "gọi LLM trực tiếp cho nhanh".
 - **Agent core là pure library**: không import FastAPI/SQLAlchemy/framework. Hợp đồng của core là *"đưa state hiện tại → trả về quyết định tiếp theo"*; ai lưu state, ai schedule là việc của harness bên ngoài.
-- **Postgres là source of truth duy nhất. Redis chỉ là transport** (queue, pub/sub, rate limit, cache). Redis chết → mất live-stream vài giây, không mất dữ liệu.
+- **Postgres là source of truth duy nhất — kể cả scheduling.** Run row trong Postgres *chính là* job; worker claim bằng `FOR UPDATE SKIP LOCKED`, không có job queue riêng. **Redis chỉ là ephemeral transport** (pub/sub, rate limit, cache) — không bao giờ giữ state có ý nghĩa. Redis chết → mất live-stream vài giây + rate limit reset; Run vẫn được claim và chạy bình thường.
+- **Không tự build những gì không phải lõi sản phẩm**: authn/authz danh tính con người dùng Keycloak (§8). Lõi phải tự sở hữu là Run engine + harness — không phải màn hình login.
 - **Multi-tenant từ dòng migration đầu tiên**: mọi bảng nghiệp vụ có `org_id`, mọi query scoped theo org. Không có "để sau".
 - **TDD**: test viết trước, LLM/embedding luôn mock trong test, suite xanh ở mọi milestone.
 - **Kỷ luật milestone chống second-system effect**: chỉ build đúng scope milestone hiện tại; ý tưởng hay ho khác ghi vào backlog (§10).
@@ -61,8 +62,8 @@ Hệ thống phân biệt 4 loại chủ thể ngay từ tầng auth — đây l
 
 | # | Principal | Là ai | Xác thực bằng | Phạm vi quyền |
 |---|---|---|---|---|
-| P1 | **Platform Operator** | Chủ SaaS (ta) | tài khoản operator | Tạo/quản lý org, nhìn health toàn hệ thống. KHÔNG đọc nội dung hội thoại của tenant. |
-| P2 | **Tenant Admin** | Nhân viên doanh nghiệp khách | email + password, thuộc 1 org | Toàn quyền trong org của mình: agents, knowledge, keys, xem trace/hội thoại, quota |
+| P1 | **Platform Operator** | Chủ SaaS (ta) | Keycloak OIDC (realm role `operator`) | Tạo/quản lý org, nhìn health toàn hệ thống. KHÔNG đọc nội dung hội thoại của tenant. |
+| P2 | **Tenant Admin** | Nhân viên doanh nghiệp khách | Keycloak OIDC (member của KC Organization tương ứng) | Toàn quyền trong org của mình: agents, knowledge, keys, xem trace/hội thoại, quota |
 | P3 | **Integration** | Backend của khách (máy) | API key (server-side only) | Đổi token cho end-user, gọi API chat server-to-server. **API key không bao giờ xuất hiện trong browser** |
 | P4 | **End-user** | Khách hàng của khách hàng | end-user token ngắn hạn (JWT, do P3 mint qua token exchange) | Chat với agent được phép; chỉ đọc hội thoại **của chính mình** |
 
@@ -118,7 +119,7 @@ pending → running → succeeded | failed | cancelled
 | Agent memory ngoài lịch sử hội thoại | Future |
 | Expose platform thành MCP server / OpenAI-compat API | Future |
 | Channel adapters (Telegram/Slack/Zalo) | Sau khi embed surface ổn định |
-| Self-serve signup, SSO/SAML, audit log chuẩn compliance | Giai đoạn C |
+| Self-serve signup, SSO/SAML, audit log chuẩn compliance | Giai đoạn C. Riêng SSO/SAML: nhờ Keycloak (ADR-3) sẽ là cấu hình, không phải effort dev — vẫn ngoài scope *support chính thức* của v2 |
 | Mobile SDK | Chỉ web widget ở v2 |
 
 ---
@@ -129,9 +130,9 @@ Ký hiệu độ ưu tiên: **[M]** must-have của v2 — thiếu là chưa xon
 
 ### FR-T — Tenancy & Identity (Milestone M0)
 
-- **FR-T1 [M]** Platform operator tạo/suspend organization. (Self-serve signup: [F])
-- **FR-T2 [M]** Tenant user đăng nhập bằng email + password (JWT session). Org owner tạo được tài khoản cho thành viên khác (chưa cần email verification/reset — [S]).
-- **FR-T3 [M]** Role tối thiểu: `owner` (quản lý user + mọi quyền admin), `admin` (mọi quyền trừ quản lý user).
+- **FR-T1 [M]** Platform operator tạo/suspend organization: tạo org record + Keycloak Organization tương ứng (map 1-1 qua `keycloak_org_id`). (Self-serve signup: [F])
+- **FR-T2 [M]** Authn con người (P1/P2) uỷ quyền hoàn toàn cho **Keycloak** (OIDC code flow + PKCE ở FE admin; backend verify JWT qua JWKS, không tự quản password/session). Email verification, reset password, invite member: dùng tính năng sẵn của Keycloak, không build.
+- **FR-T3 [M]** Role tối thiểu map từ Keycloak: `owner` (quản lý member + mọi quyền admin), `admin` (mọi quyền trừ quản lý member). Backend đọc role/org từ token claim; **authz theo resource (org-scoping) vẫn nằm ở backend ta**, Keycloak chỉ trả lời "ai, thuộc org nào, role gì".
 - **FR-T4 [M]** API key: tạo/thu hồi theo org; hiển thị đúng một lần lúc tạo; lưu dạng hash.
 - **FR-T5 [M]** Mọi resource thuộc đúng một org; mọi API đọc/ghi đều scoped theo org của principal; cross-org access bị chặn ở tầng query (không chỉ ở router).
 
@@ -189,7 +190,7 @@ Các con số là **đề xuất ban đầu** `[CẦN CHỐT]` — quan trọng 
 - **NFR-SEC2** API key: chỉ dùng server-side, lưu hash (không plaintext), thu hồi có hiệu lực ≤ 60s (cache TTL).
 - **NFR-SEC3** End-user token: JWT ngắn hạn (TTL mặc định 1h), scope tối thiểu (org, agent(s), end_user), ký bằng secret per-deployment. Widget/browser không bao giờ thấy API key.
 - **NFR-SEC4** Secrets của tenant (agent api_key, MCP headers) mã hoá at-rest (v1 để plaintext — v2 bắt buộc).
-- **NFR-SEC5** Password hash chuẩn (argon2/bcrypt); session JWT có exp + revoke được (logout).
+- **NFR-SEC5** Vòng đời credential con người (password policy, hash, session, logout/revoke) uỷ quyền cho Keycloak; backend không lưu bất kỳ password nào. Token P3/P4 (tự quản) tuân NFR-SEC2/SEC3.
 
 ### NFR-S — Scale & Performance
 
@@ -223,12 +224,54 @@ Các con số là **đề xuất ban đầu** `[CẦN CHỐT]` — quan trọng 
 
 ---
 
-## 8. Milestones & tiêu chí hoàn thành
+## 8. Stack & Quyết định kiến trúc (ADR)
+
+Mỗi lựa chọn dưới đây là quyết định đã cân nhắc kèm lý do và cái giá chấp nhận. Implementation agent không được thay đổi stack mà không quay lại tài liệu này.
+
+### ADR-1 — Postgres: source of truth cho TẤT CẢ state, kể cả scheduling
+
+**Quyết định**: Mọi state có ý nghĩa (org, agent, run, run_events, conversation, quota, vector) nằm trong Postgres. **Run scheduling cũng thuần Postgres**: worker claim Run bằng `SELECT ... FOR UPDATE SKIP LOCKED` (claim = UPDATE cột lease + commit ngay, không giữ lock suốt run), wake-up bằng `LISTEN/NOTIFY` làm tín hiệu "có việc mới" + fallback poll định kỳ. Không có job queue riêng.
+
+**Vì sao**: (a) Run row *chính là* job — spec đã đặt lease/heartbeat/resume trong Postgres, chạy thêm queue ngoài là hai nguồn sự thật phải đồng bộ; (b) tạo Run + schedule = **một transaction** — xoá bỏ dual-write problem của v1 (ghi PG + enqueue Redis không atomic); (c) fair scheduling per-tenant (FR-L2) thành SQL đơn giản thay vì Lua script tự chế trên Redis; (d) pattern đã kiểm chứng công nghiệp: Oban, Solid Queue (Rails 8 chuyển từ Redis về PG), pg-boss, River, Procrastinate. Ingestion job cũng đi cùng cơ chế này (một loại run/task đơn giản) — một máy móc queue duy nhất.
+
+**Giá chấp nhận**: dead-tuple bloat khi churn cao → autovacuum tuning + retention/cleanup job (đã có NFR-D1); trần throughput thấp hơn Redis queue — không liên quan ở scale của ta (job là LLM call nhiều giây; scheduling cần hàng chục-trăm ops/s, SKIP LOCKED chịu hàng nghìn/s). `LISTEN/NOTIFY` chỉ được dùng làm chuông báo, **cấm** dùng làm data plane (nghẽn queue notification toàn cục).
+
+**Hệ quả**: **arq bị loại bỏ** khỏi stack v2 (v1 dùng arq; thư viện hiện ít được bảo trì tích cực — vai trò của nó được Run engine hấp thụ trọn).
+
+### ADR-2 — Redis: ephemeral transport thuần tuý, bị giáng cấp có chủ đích
+
+**Quyết định**: Redis giữ đúng 3 vai — (①) pub/sub relay token stream worker→API→SSE, (②) rate-limit counters (`INCR/EXPIRE`), (③) cache ngắn hạn (API key lookup/revocation). **Cấm tuyệt đối** lưu state có ý nghĩa vào Redis.
+
+**Vì sao giữ (điểm mạnh đúng nghề)**: token stream là dữ liệu phù du, tần suất cao, mất được (client luôn đọc kết quả cuối từ PG) — khớp chính xác pub/sub at-most-once in-memory, độ trễ <1ms, fan-out rẻ, mọi API replica subscribe được mọi run (scale ngang không sticky session). Counter atomic là nghề gốc của Redis; làm trong PG là hot-row contention + WAL churn cho dữ liệu sống 60 giây.
+
+**Vì sao giáng cấp (điểm yếu phải né)**: durability của Redis là opt-in nửa vời (AOF everysec vẫn mất ~1s, RDB mất vài phút) — v1 dùng nó làm job store là dùng sai chỗ; pub/sub at-most-once — subscriber vắng mặt là mất message (đã xử lý bằng subscribe-trước-schedule + final state luôn ở PG).
+
+**Failure mode sau quyết định này**: Redis chết → mất live-stream + rate limit tạm thời; worker **vẫn claim và chạy Run bình thường** (v1: Redis chết = toàn bộ chat chết). Lựa chọn thay thế đã xét và loại: `LISTEN/NOTIFY` cho token (nghẽn cấu trúc), NATS (thêm một hệ thống vận hành chỉ để thay việc Redis làm tốt). Ghi chú licensing: nếu cần né RSAL/SSPL/AGPL của Redis, **Valkey** (BSD, Linux Foundation) là drop-in cùng protocol.
+
+### ADR-3 — Keycloak: authn/authz cho danh tính con người (P1/P2), KHÔNG cho P3/P4
+
+**Quyết định**: một realm duy nhất + **Keycloak Organizations** (KC ≥ 26) map 1-1 với `organizations`; FE admin dùng OIDC code flow + PKCE; backend stateless verify JWT qua JWKS, đọc claim org/role. **P3 (API key) và P4 (end-user token) tự quản như spec** — không đưa vào Keycloak.
+
+**Vì sao**: không tốn effort build login/password/invite/verification — không phải lõi sản phẩm; SSO/SAML cho khách doanh nghiệp (chắc chắn sẽ bị đòi ở giai đoạn C) trở thành cấu hình Keycloak thay vì effort dev. Ranh giới P3/P4 giữ ngoài KC vì: API key per-tenant qua KC client-credentials là anti-pattern quản trị (khách B2B quen "một chuỗi key, curl là chạy"); end-user là *khách của khách* — hàng trăm nghìn identity ta không sở hữu vòng đời, nhét vào KC là bloat.
+
+**Giá chấp nhận**: thêm một stateful service JVM (compose nặng hơn, cần DB riêng cho KC); learning curve cấu hình; độ trễ khả dụng của trang admin phụ thuộc thêm KC (end-user chat KHÔNG phụ thuộc KC — P4 token tự verify).
+
+### ADR-4 — Python/FastAPI + worker tự viết
+
+**Quyết định**: giữ FastAPI (API, stateless, asyncio) + worker process Python tự viết (vòng claim-execute-heartbeat trên Postgres).
+
+**Vì sao**: workload I/O-bound (LLM là API bên ngoài) — asyncio đủ và đúng; đội hiểu sâu stack này; provider adapters/streaming/MCP client của v1 tái dùng nguyên vẹn; "tự sở hữu harness" nghĩa là vòng đời worker là code của ta, không phải config của framework queue bên thứ ba.
+
+**Đã xét và loại**: Temporal (durable execution rất mạnh nhưng đi ngược mục tiêu tự sở hữu lõi + thêm cluster phải vận hành); Go cho worker (không đáng cái giá chia đôi codebase khi bottleneck là chờ LLM).
+
+---
+
+## 9. Milestones & tiêu chí hoàn thành
 
 | MS | Tên | Nội dung chính | Definition of Done |
 |---|---|---|---|
-| **M0** | Tenancy & Identity | orgs, users, login, roles, API keys, org-scoping toàn schema; CI; port Agent/KB CRUD (org-scoped) | Tạo org qua operator → login tenant admin → CRUD agent/KB trong org; test cách ly cross-tenant xanh; CI chạy trên PR |
-| **M1** | Run Engine ⭐ | runs + run_events, state machine, claim/lease/heartbeat/resume, cancel, pub/sub stream; agent loop chạy trên engine (1 tool mock) | Kill worker giữa run → run resume và hoàn thành; cancel hoạt động; trace đọc được từ DB; stream SSE live |
+| **M0** | Tenancy & Identity | Keycloak (compose + realm setup + Organizations), OIDC integration FE/BE, orgs (map KC), API keys, org-scoping toàn schema; CI; port Agent/KB CRUD (org-scoped) | Operator tạo org → tenant admin login qua Keycloak → CRUD agent/KB trong org; test cách ly cross-tenant xanh; CI chạy trên PR |
+| **M1** | Run Engine ⭐ | runs + run_events, state machine, claim thuần Postgres (`SKIP LOCKED` + lease/heartbeat + `LISTEN/NOTIFY` wake-up), resume, cancel, Redis pub/sub stream; agent loop chạy trên engine (1 tool mock) | Kill worker giữa run → run resume và hoàn thành; kill Redis giữa run → run vẫn hoàn thành (chỉ mất live-stream); cancel hoạt động; trace đọc được từ DB; stream SSE live |
 | **M2** | Embed Surface | token exchange, EndUser, Conversation, chat API/SSE trên Run engine, widget nhúng, knowledge_search + MCP tools nối vào engine | App mẫu (host giả lập) nhúng widget, end-user chat có streaming + citations; end-user không đọc được hội thoại người khác |
 | **M3** | Control Plane | run list, trace viewer, conversation viewer, usage dashboard, quota config (FE admin port + mở rộng) | Tenant admin trả lời được "agent vừa làm gì/vì sao/tốn bao nhiêu" hoàn toàn qua UI |
 | **M4** | Hardening tools & ingestion | port đầy đủ ingestion niceties, MCP quản trị UI, secrets encryption, retention jobs | FR-A/S còn lại + NFR-SEC4 + NFR-D1 đạt |
@@ -240,7 +283,7 @@ Sau mỗi milestone: cập nhật `progress.md`, demo chạy được end-to-end
 
 ---
 
-## 9. Rủi ro chính & đối sách
+## 10. Rủi ro chính & đối sách
 
 | Rủi ro | Đối sách |
 |---|---|
@@ -250,16 +293,18 @@ Sau mỗi milestone: cập nhật `progress.md`, demo chạy được end-to-end
 | Port module v1 kéo theo giả định single-tenant ngầm | Mỗi module port phải qua review + bổ sung test org-scoping trước khi merge |
 | Widget chạy trên trang của khách (CSP, CORS, xung đột CSS) | Web component + shadow DOM; CORS config per-org; test trên app mẫu độc lập |
 | Số NFR đặt sai (quá cao/thấp) | Baseline load test sớm (kéo một phần M5 lên chạy thô ngay sau M2), chỉnh số có căn cứ |
+| Postgres-queue: bloat/vacuum dưới churn cao; claim contention | Lease bằng cột + commit ngay (không giữ lock dài); autovacuum tuning; cleanup/retention job; load test M5 đo riêng scheduling path |
+| Keycloak: thêm JVM service, cấu hình sai realm/claim là lỗ hổng authn | Realm config as-code (export JSON vào repo, import khi khởi tạo); test integration authn ở CI với KC container; trang admin chết theo KC nhưng chat end-user (P4) không phụ thuộc KC |
 
 ---
 
-## 10. Backlog sau v2 (giữ chỗ, không làm)
+## 11. Backlog sau v2 (giữ chỗ, không làm)
 
 Asking/HITL (`waiting_input`) · Escalation/approval (`waiting_approval`) · Triggers (cron/webhook/agent-to-agent) · Agent memory · Multi-agent orchestration · Expose MCP server + OpenAI-compat API · Channel adapters (Telegram/Zalo/Slack) · React SDK · Billing · Self-serve signup · SSO/SAML · Audit log compliance · Cost ($) analytics · Mobile SDK
 
 ---
 
-## 11. Glossary
+## 12. Glossary
 
 | Thuật ngữ | Nghĩa trong tài liệu này |
 |---|---|
