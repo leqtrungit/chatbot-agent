@@ -157,10 +157,12 @@ Ký hiệu độ ưu tiên: **[M]** must-have của v2 — thiếu là chưa xon
 ### FR-C — Chat & Embed Surface (M2)
 
 - **FR-C1 [M]** Token exchange: `POST /v2/token` — backend khách (API key) gửi `end_user_id` (+ display metadata tuỳ chọn) → nhận end-user JWT ngắn hạn. EndUser record được upsert theo (org, end_user_id).
+  - **Trust model (tuyên bố tường minh)**: platform không xác thực end-user; platform xác thực *lời khẳng định của tenant về end-user*, tin cậy được vì đi qua API key server-side. Hệ quả bắt buộc: **không bao giờ** tồn tại endpoint mint end-user token gọi được từ browser — token exchange là server-to-server only.
+  - **Visitor ẩn danh**: pattern chuẩn (ghi vào docs tích hợp) — backend khách tự sinh `end_user_id = "anon-<uuid>"`, lưu cookie phía họ, mint token như user thường. Platform không cần cơ chế riêng.
 - **FR-C2 [M]** Chat API (end-user token): gửi message vào một conversation → tạo Run → SSE stream (queued → tokens → done kèm citations). Conversation lịch sử server-managed theo (agent, end_user, conversation_id).
 - **FR-C3 [M]** Conversation API (end-user token): list + đọc lịch sử **chỉ của chính end-user đó**. (So với v1: vá lỗ "mọi API key đọc được mọi session".)
 - **FR-C4 [M]** Web widget nhúng bằng `<script>` tag: khung chat nổi (floating bubble) hoặc inline container; nhận end-user token từ host app; streaming; theme cơ bản (màu chủ đạo, logo, vị trí) config qua tham số. Không SDK framework-specific ở v2 ([F]: React SDK).
-- **FR-C5 [M]** Chat server-to-server (API key, không cần end-user token) cho tích hợp backend thuần — giữ tương đương webhook v1 nhưng đi qua Run engine.
+- **FR-C5 [M]** Chat server-to-server (API key, không cần end-user token) cho tích hợp backend thuần — giữ tương đương webhook v1 nhưng đi qua Run engine. **Ownership rule**: request được phép khai `end_user_id` trực tiếp (API key là kênh tin cậy → conversation quy về user đó, như token exchange); không khai → conversation thuộc về chính integration (`end_user_id = null`, service-conversation). Không có nhánh thứ ba.
 - **FR-C6 [S]** Client-managed history mode (caller tự gửi mảng history, không persist) — port hành vi v1 nếu còn phù hợp với mô hình Conversation mới; nếu xung đột thiết kế thì defer và ghi rõ lý do.
 
 ### FR-O — Control Plane / Observability (M3)
