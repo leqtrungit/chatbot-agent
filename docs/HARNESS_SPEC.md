@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Trạng thái** | 🔍 v0.2 DRAFT — đang review (v0.2: Keycloak cho authn/authz P1–P2; bỏ arq, scheduling thuần Postgres; thêm §8 Stack ADR) |
+| **Trạng thái** | ✅ **v1.0 APPROVED** (owner duyệt 2026-08-27). Ngoại lệ duy nhất: §2.3 business targets — owner chủ động dời, không chặn implementation |
 | **Thay thế** | Định hướng lại toàn bộ sản phẩm; `PRODUCT_OVERVIEW.md` trở thành tài liệu tham chiếu v1 (legacy) |
 | **Quy ước đọc** | Mục đánh dấu `[CẦN CHỐT]` là quyết định đang chờ owner duyệt. FR/NFR có ID để mọi task implementation trace ngược về đây. |
 
@@ -38,9 +38,9 @@ Các harness/agent framework hiện có chủ yếu phục vụ cá nhân develo
 
 ### 2.2 Khách hàng mục tiêu
 
-Doanh nghiệp vừa và nhỏ đã có ứng dụng riêng (web/app), muốn thêm năng lực AI agent (trước hết: chat hỗ trợ khách hàng / trợ lý nghiệp vụ trên tri thức nội bộ) mà không xây đội AI riêng. `[CẦN CHỐT — segment cụ thể hơn: ngành nào trước? thị trường VN hay global?]`
+**Thị trường: Việt Nam** (chốt 2026-08-27). Doanh nghiệp vừa và nhỏ đã có ứng dụng riêng (web/app), muốn thêm năng lực AI agent (trước hết: chat hỗ trợ khách hàng / trợ lý nghiệp vụ trên tri thức nội bộ) mà không xây đội AI riêng. Segment ngành cụ thể: chưa khoá — học từ design partners giai đoạn B. Hệ quả compliance: khung tham chiếu chính là **Nghị định 13/2023/NĐ-CP (PDPD)** — bảo vệ dữ liệu cá nhân, quyền xoá dữ liệu (đã cover bởi FR-O9/NFR-D2), lưu ý nghĩa vụ đánh giá tác động khi quy mô tăng (phase C).
 
-### 2.3 Business targets theo giai đoạn `[CẦN CHỐT — toàn bộ mục này là đề xuất khung, owner điền/sửa]`
+### 2.3 Business targets theo giai đoạn `[DEFERRED — owner chủ động dời, sẽ chốt sau; khung dưới đây giữ nguyên làm định hướng]`
 
 | Giai đoạn | Target | Tương ứng milestone |
 |---|---|---|
@@ -171,7 +171,7 @@ Ký hiệu độ ưu tiên: **[M]** must-have của v2 — thiếu là chưa xon
 ### FR-O — Control Plane / Observability (M3)
 
 - **FR-O1 [M]** Run list theo org: filter theo agent, status, khoảng thời gian; realtime cho run đang chạy.
-- **FR-O2 [M]** Trace viewer: mở một Run xem từng step (prompt/response LLM, tool call args/result, usage, timing, lỗi). Nội dung trace lưu có kiểm soát: bật/tắt lưu full content theo agent + retention theo org (mặc định 30 ngày `[CẦN CHỐT]`).
+- **FR-O2 [M]** Trace viewer: mở một Run xem từng step (prompt/response LLM, tool call args/result, usage, timing, lỗi). Nội dung trace lưu có kiểm soát: bật/tắt lưu full content theo agent + retention theo org — **configurable per org, mặc định 30 ngày** (đã duyệt).
 - **FR-O3 [M]** Conversation viewer: tenant admin xem hội thoại end-users của org mình (phục vụ vận hành/QA).
 - **FR-O4 [M]** Usage dashboard theo org: requests, tokens, breakdown theo agent/key/model/status/time. *(Port analytics v1, thêm org-scoping)*
 - **FR-O5 [M]** Quota config theo org: rate limit per key/per end-user, concurrency cap, queue-depth. Operator đặt trần theo org; tenant admin phân bổ trong trần đó.
@@ -191,7 +191,7 @@ Ký hiệu độ ưu tiên: **[M]** must-have của v2 — thiếu là chưa xon
 
 ## 7. Non-Functional Requirements
 
-Các con số là **đề xuất ban đầu** `[CẦN CHỐT]` — quan trọng là có con số để test chống lại, số có thể chỉnh sau baseline đầu tiên.
+Các con số **đã duyệt 2026-08-27**; được phép hiệu chỉnh sau baseline load test đầu tiên (M5) nếu có căn cứ đo đạc, qua một lần sửa spec có review.
 
 ### NFR-SEC — Bảo mật & cách ly
 
@@ -222,7 +222,7 @@ Các con số là **đề xuất ban đầu** `[CẦN CHỐT]` — quan trọng 
 
 ### NFR-D — Data
 
-- **NFR-D1** Retention nội dung trace/conversation config theo org; job xoá định kỳ. Mặc định: trace content 30 ngày, conversation không giới hạn `[CẦN CHỐT]`.
+- **NFR-D1** Retention nội dung trace/conversation **configurable theo org**; job xoá định kỳ. Mặc định (đã duyệt): trace content 30 ngày, conversation không giới hạn.
 - **NFR-D2** Xoá org = xoá được toàn bộ dữ liệu org (cascade có chủ đích) — điều kiện tối thiểu cho cam kết dữ liệu với doanh nghiệp.
 
 ### NFR-T — Testability & Engineering
@@ -317,7 +317,7 @@ Sau mỗi milestone: cập nhật `progress.md`, demo chạy được end-to-end
 | Prompt injection / tool abuse | End-user input và tài liệu upload đều là kênh injection vào LLM có quyền gọi tool của tenant. Mitigation v2: tenant admin kiểm soát tool nào gắn agent nào + max_iterations + budget cap + trace nhìn thấy hết. Guardrails nội dung: backlog. Threat model này phải nằm trong docs tích hợp để tenant cân nhắc khi gắn tool có quyền ghi | Trước khi khuyến khích tenant gắn MCP tool có side-effect |
 | "Operator không đọc nội dung tenant" là chính sách, chưa phải kỹ thuật | P1 có DB access nên về vật lý đọc được. Ổn khi solo-operator giai đoạn design partner | Trước khi thu tiền: audit log truy cập + kiểm soát thật (phase C) |
 | Postgres là điểm tựa duy nhất | State + queue + vector đều Postgres — HA/backup của Postgres chính là availability story. `run_events` chứa full LLM content: cần làm toán dung lượng khi load test (M5); partition theo tháng khi cần | M5 đo; partition khi dung lượng chứng minh cần |
-| Compliance theo thị trường (GDPR / NĐ13 PDPD VN) | Ảnh hưởng default retention, DPA, data residency — phụ thuộc `[CẦN CHỐT]` segment ở §2.2 | Chốt segment xong thì chốt số retention + template DPA |
+| Compliance | Thị trường VN đã chốt → khung là NĐ13/2023 PDPD (§2.2); retention defaults đã duyệt. Còn lại: template DPA + đánh giá tác động khi quy mô tăng | Phase C, trước khách trả phí đầu tiên |
 
 ---
 
