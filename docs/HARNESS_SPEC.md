@@ -159,6 +159,7 @@ Ký hiệu độ ưu tiên: **[M]** must-have của v2 — thiếu là chưa xon
 - **FR-C1 [M]** Token exchange: `POST /v2/token` — backend khách (API key) gửi `end_user_id` (+ display metadata tuỳ chọn) → nhận end-user JWT ngắn hạn. EndUser record được upsert theo (org, end_user_id).
   - **Trust model (tuyên bố tường minh)**: platform không xác thực end-user; platform xác thực *lời khẳng định của tenant về end-user*, tin cậy được vì đi qua API key server-side. Hệ quả bắt buộc: **không bao giờ** tồn tại endpoint mint end-user token gọi được từ browser — token exchange là server-to-server only.
   - **Visitor ẩn danh**: pattern chuẩn (ghi vào docs tích hợp) — backend khách tự sinh `end_user_id = "anon-<uuid>"`, lưu cookie phía họ, mint token như user thường. Platform không cần cơ chế riêng.
+  - **JIT provisioning (chủ đích)**: không tồn tại API "đăng ký end-user" riêng. Nguồn sự thật danh tính end-user là hệ thống của tenant; EndUser bên ta là *shadow record* sinh ra tại lần exchange đầu, làm điểm neo ownership. Ta không bao giờ giữ credential của end-user.
 - **FR-C2 [M]** Chat API (end-user token): gửi message vào một conversation → tạo Run → SSE stream (queued → tokens → done kèm citations). Conversation lịch sử server-managed theo (agent, end_user, conversation_id).
 - **FR-C3 [M]** Conversation API (end-user token): list + đọc lịch sử **chỉ của chính end-user đó**. (So với v1: vá lỗ "mọi API key đọc được mọi session".)
 - **FR-C4 [M]** Web widget nhúng bằng `<script>` tag: khung chat nổi (floating bubble) hoặc inline container; nhận end-user token từ host app; streaming; theme cơ bản (màu chủ đạo, logo, vị trí) config qua tham số. Không SDK framework-specific ở v2 ([F]: React SDK).
@@ -173,6 +174,9 @@ Ký hiệu độ ưu tiên: **[M]** must-have của v2 — thiếu là chưa xon
 - **FR-O4 [M]** Usage dashboard theo org: requests, tokens, breakdown theo agent/key/model/status/time. *(Port analytics v1, thêm org-scoping)*
 - **FR-O5 [M]** Quota config theo org: rate limit per key/per end-user, concurrency cap, queue-depth. Operator đặt trần theo org; tenant admin phân bổ trong trần đó.
 - **FR-O6 [S]** Export trace/conversation (JSON) phục vụ audit nội bộ của tenant.
+- **FR-O7 [M]** End-user directory: tenant admin list/search end-users của org (end_user_id, metadata hiển thị, first/last seen, số conversation); từ một end-user mở được danh sách conversation của họ (cửa vào FR-O3). *Không phải* identity management — chỉ là danh bạ shadow records (xem FR-C1 JIT).
+- **FR-O8 [S]** Block end-user: tenant admin block/unblock; end-user bị block bị từ chối ở cả token exchange lẫn chat request (403), hiệu lực ≤ 60s (cùng cơ chế cache như thu hồi API key).
+- **FR-O9 [S]** Xoá end-user (data erasure per user): xoá EndUser → cascade toàn bộ conversations/runs content của user đó; phục vụ yêu cầu xoá dữ liệu mà end-user gửi cho tenant. (Bổ sung mức mịn cho NFR-D2.)
 
 ### FR-L — Load & Fairness (M5, thiết kế từ M1)
 
