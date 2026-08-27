@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     keycloak_issuer: str = "http://localhost:8080/realms/harness"
     keycloak_jwks_url: str = "http://localhost:8080/realms/harness/protocol/openid-connect/certs"
     keycloak_audience: str = "backend"
+    keycloak_org_claim: str = "organizations"
+    keycloak_role_claim_path: str = "realm_access.roles"
+    keycloak_operator_role: str = "operator"
 
     # CORS
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
