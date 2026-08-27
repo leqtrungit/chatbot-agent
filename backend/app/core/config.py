@@ -24,6 +24,12 @@ class Settings(BaseSettings):
     keycloak_org_claim: str = "organization"  # claim written by oidc-organization-membership-mapper (see infra/keycloak)
     keycloak_role_claim_path: str = "realm_access.roles"
     keycloak_operator_role: str = "operator"
+    keycloak_base_url: str = "http://localhost:8080"
+    keycloak_admin_username: str = "admin"
+    keycloak_admin_password: str = "admin"
+
+    # Document upload storage root; files live under {upload_dir}/{org_id}/
+    upload_dir: str = "data/uploads"
 
     # CORS
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
