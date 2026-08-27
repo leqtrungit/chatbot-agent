@@ -1,7 +1,7 @@
 [project]
 name = "chatbot-agent-backend"
 version = "0.1.0"
-description = "Generic domain-knowledge chatbot agent platform - backend"
+description = "Generic domain-knowledge chatbot agent platform - backend v2"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115",
@@ -12,22 +12,16 @@ dependencies = [
     "pgvector>=0.3",
     "pydantic>=2.10",
     "pydantic-settings>=2.7",
-    "arq>=0.26",
     "redis>=5.2",
     "httpx>=0.28",
     "python-multipart>=0.0.20",
-    "pypdf>=5.1",
-    "python-docx>=1.1",
-    "jinja2>=3.1",
-    "mcp>=2.0.0",
+    "pyjwt[crypto]>=2.10",
 ]
 
 [dependency-groups]
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.25",
-    "aiosqlite>=0.20",
-    "fakeredis>=2.26",
 ]
 
 [tool.pytest.ini_options]
