@@ -68,9 +68,7 @@ class AgentRead(BaseModel):
     @classmethod
     def from_orm(cls, agent) -> AgentRead:  # noqa: ANN001
         """Create AgentRead from ORM agent instance."""
-        kb_ids = []
-        if hasattr(agent, "knowledge_bases") and agent.knowledge_bases:
-            kb_ids = [kb.id for kb in agent.knowledge_bases]
+        kb_ids = [kb.id for kb in agent.knowledge_bases]
         return cls(
             id=agent.id,
             org_id=agent.org_id,

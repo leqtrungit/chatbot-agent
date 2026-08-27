@@ -21,7 +21,7 @@ from sqlalchemy.exc import IntegrityError
 from app.orgs.models import Organization
 from app.orgs.service import create_org, suspend_org, reactivate_org, list_orgs
 from tests.orgs.conftest import FakeKeycloakAdmin
-from tests.db_utils import ensure_test_database, test_db_url
+from tests.db_utils import ensure_test_database
 
 # Fixtures imported from schema conftest
 

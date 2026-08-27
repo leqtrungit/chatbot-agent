@@ -19,7 +19,7 @@ from sqlalchemy import (
     func,
 )
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.db import Base
 
@@ -83,6 +83,12 @@ class Agent(Base):
         server_default=func.now(),
         onupdate=func.now(),
         nullable=False,
+    )
+    # Relationship to knowledge bases via secondary table
+    knowledge_bases: Mapped[list["KnowledgeBase"]] = relationship(
+        "KnowledgeBase",
+        secondary=kb_agents,
+        lazy="selectin",
     )
 
     __table_args__ = (
