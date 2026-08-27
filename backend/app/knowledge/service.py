@@ -66,9 +66,13 @@ async def _check_kb_conflict(
     stmt = org_query(KnowledgeBase, org_id).where(
         (KnowledgeBase.name == name) | (KnowledgeBase.slug == slug)
     )
+    # Exclude the specified ID in the query itself; when multiple rows match,
+    # .first() order is undefined, so post-filter would silently miss conflicts.
+    if exclude_id is not None:
+        stmt = stmt.where(KnowledgeBase.id != exclude_id)
     result = await session.execute(stmt)
     existing = result.scalars().first()
-    if existing is not None and existing.id != exclude_id:
+    if existing is not None:
         raise KnowledgeBaseConflictError(
             f"Knowledge base with name '{name}' or slug '{slug}' already exists in this organization"
         )
