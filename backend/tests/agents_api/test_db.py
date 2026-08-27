@@ -19,9 +19,6 @@ from app.agents.router import get_agent_router
 from app.knowledge.models import KnowledgeBase
 from app.orgs.models import Organization
 
-pytestmark = pytest.mark.usefixtures("db_session")
-
-
 async def _create_org(session: AsyncSession, org_id: uuid.UUID, name: str) -> Organization:
     """Create an organization in the test DB."""
     org = Organization(id=org_id, name=name, slug=name.lower(), status="active")
@@ -63,13 +60,13 @@ def _make_app(
 
 @pytest.mark.asyncio
 async def test_create_agent_persists_to_db(
-    session: AsyncSession, db_session
+    db_session: AsyncSession
 ) -> None:
     """Create agent is persisted to database."""
     org_id = uuid.uuid4()
-    await _create_org(session, org_id, "TestOrg")
+    await _create_org(db_session, org_id, "TestOrg")
 
-    app = _make_app(session, _principal("testorg"))
+    app = _make_app(db_session, _principal("testorg"))
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -93,15 +90,15 @@ async def test_create_agent_persists_to_db(
 
 
 @pytest.mark.asyncio
-async def test_unique_agent_name_per_org(session: AsyncSession, db_session) -> None:
+async def test_unique_agent_name_per_org(db_session: AsyncSession) -> None:
     """Agent names must be unique within an org, but can repeat across orgs."""
     org1_id = uuid.uuid4()
     org2_id = uuid.uuid4()
-    await _create_org(session, org1_id, "Org1")
-    await _create_org(session, org2_id, "Org2")
+    await _create_org(db_session, org1_id, "Org1")
+    await _create_org(db_session, org2_id, "Org2")
 
     # Create agent in org1
-    app1 = _make_app(session, _principal("org1"))
+    app1 = _make_app(db_session, _principal("org1"))
     async with AsyncClient(
         transport=ASGITransport(app=app1), base_url="http://test"
     ) as client:
@@ -132,16 +129,16 @@ async def test_unique_agent_name_per_org(session: AsyncSession, db_session) -> N
 
 @pytest.mark.asyncio
 async def test_cross_org_agent_not_accessible(
-    session: AsyncSession, db_session
+    db_session: AsyncSession
 ) -> None:
     """Agent in org1 is not accessible by principal of org2."""
     org1_id = uuid.uuid4()
     org2_id = uuid.uuid4()
-    await _create_org(session, org1_id, "Org1")
-    await _create_org(session, org2_id, "Org2")
+    await _create_org(db_session, org1_id, "Org1")
+    await _create_org(db_session, org2_id, "Org2")
 
     # Create agent in org1
-    app1 = _make_app(session, _principal("org1"))
+    app1 = _make_app(db_session, _principal("org1"))
     async with AsyncClient(
         transport=ASGITransport(app=app1), base_url="http://test"
     ) as client:
@@ -163,15 +160,15 @@ async def test_cross_org_agent_not_accessible(
 
 @pytest.mark.asyncio
 async def test_set_agent_knowledge_bases_same_org(
-    session: AsyncSession, db_session
+    db_session: AsyncSession
 ) -> None:
     """Link agent to knowledge bases within same org."""
     org_id = uuid.uuid4()
-    await _create_org(session, org_id, "TestOrg")
-    kb1 = await _create_kb(session, org_id, "KB1")
-    kb2 = await _create_kb(session, org_id, "KB2")
+    await _create_org(db_session, org_id, "TestOrg")
+    kb1 = await _create_kb(db_session, org_id, "KB1")
+    kb2 = await _create_kb(db_session, org_id, "KB2")
 
-    app = _make_app(session, _principal("testorg"))
+    app = _make_app(db_session, _principal("testorg"))
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -201,16 +198,16 @@ async def test_set_agent_knowledge_bases_same_org(
 
 @pytest.mark.asyncio
 async def test_set_agent_knowledge_bases_cross_org_404(
-    session: AsyncSession, db_session
+    db_session: AsyncSession
 ) -> None:
     """Linking agent to KB from different org returns 404."""
     org1_id = uuid.uuid4()
     org2_id = uuid.uuid4()
-    await _create_org(session, org1_id, "Org1")
-    await _create_org(session, org2_id, "Org2")
-    kb2 = await _create_kb(session, org2_id, "Org2KB")
+    await _create_org(db_session, org1_id, "Org1")
+    await _create_org(db_session, org2_id, "Org2")
+    kb2 = await _create_kb(db_session, org2_id, "Org2KB")
 
-    app1 = _make_app(session, _principal("org1"))
+    app1 = _make_app(db_session, _principal("org1"))
     async with AsyncClient(
         transport=ASGITransport(app=app1), base_url="http://test"
     ) as client:
@@ -232,12 +229,12 @@ async def test_set_agent_knowledge_bases_cross_org_404(
 
 
 @pytest.mark.asyncio
-async def test_update_agent_in_db(session: AsyncSession, db_session) -> None:
+async def test_update_agent_in_db(db_session: AsyncSession) -> None:
     """Update agent persists to database."""
     org_id = uuid.uuid4()
-    await _create_org(session, org_id, "TestOrg")
+    await _create_org(db_session, org_id, "TestOrg")
 
-    app = _make_app(session, _principal("testorg"))
+    app = _make_app(db_session, _principal("testorg"))
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -267,12 +264,12 @@ async def test_update_agent_in_db(session: AsyncSession, db_session) -> None:
 
 
 @pytest.mark.asyncio
-async def test_deactivate_agent_in_db(session: AsyncSession, db_session) -> None:
+async def test_deactivate_agent_in_db(db_session: AsyncSession) -> None:
     """Deactivate agent sets is_active=False in database."""
     org_id = uuid.uuid4()
-    await _create_org(session, org_id, "TestOrg")
+    await _create_org(db_session, org_id, "TestOrg")
 
-    app = _make_app(session, _principal("testorg"))
+    app = _make_app(db_session, _principal("testorg"))
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as client:
