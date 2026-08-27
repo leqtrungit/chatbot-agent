@@ -153,6 +153,7 @@ Ký hiệu độ ưu tiên: **[M]** must-have của v2 — thiếu là chưa xon
 - **FR-R5 [M]** Mỗi Run có event stream realtime (Redis pub/sub → SSE): token deltas, tool activity, state change, done/error. Consumer: widget end-user (token) và trace viewer admin (live tail).
 - **FR-R6 [M]** Run kết thúc ghi nhận: usage tổng (tokens), citations, stop reason, duration, số iteration.
 - **FR-R7 [M]** Agent loop bên trong Run giữ các tính chất v1: tool errors không crash loop (thành tool_result lỗi), tool calls chạy concurrent, max_iterations guard.
+- **FR-R8 [M]** Serialize per conversation: một conversation tối đa **một Run active**; message đến khi đang có Run active được xếp hàng chạy tuần tự theo thứ tự đến (không reject). Enforce ngay trong điều kiện claim của scheduler (ADR-1). Chống spam xếp hàng dài: rate limit per end-user (FR-O5) là guard phía trước.
 
 ### FR-C — Chat & Embed Surface (M2)
 
@@ -165,6 +166,7 @@ Ký hiệu độ ưu tiên: **[M]** must-have của v2 — thiếu là chưa xon
 - **FR-C4 [M]** Web widget nhúng bằng `<script>` tag: khung chat nổi (floating bubble) hoặc inline container; nhận end-user token từ host app; streaming; theme cơ bản (màu chủ đạo, logo, vị trí) config qua tham số. Không SDK framework-specific ở v2 ([F]: React SDK).
 - **FR-C5 [M]** Chat server-to-server (API key, không cần end-user token) cho tích hợp backend thuần — giữ tương đương webhook v1 nhưng đi qua Run engine. **Ownership rule**: request được phép khai `end_user_id` trực tiếp (API key là kênh tin cậy → conversation quy về user đó, như token exchange); không khai → conversation thuộc về chính integration (`end_user_id = null`, service-conversation). Không có nhánh thứ ba.
 - **FR-C6 [S]** Client-managed history mode (caller tự gửi mảng history, không persist) — port hành vi v1 nếu còn phù hợp với mô hình Conversation mới; nếu xung đột thiết kế thì defer và ghi rõ lý do.
+- **FR-C7 [S]** Idempotency: chat send nhận header `Idempotency-Key`; key trùng trong cửa sổ 24h → trả lại kết quả/Run của lần đầu, không tạo Run mới. Bảo vệ khách khỏi double-run (double tiền LLM) khi backend họ retry.
 
 ### FR-O — Control Plane / Observability (M3)
 
@@ -173,6 +175,7 @@ Ký hiệu độ ưu tiên: **[M]** must-have của v2 — thiếu là chưa xon
 - **FR-O3 [M]** Conversation viewer: tenant admin xem hội thoại end-users của org mình (phục vụ vận hành/QA).
 - **FR-O4 [M]** Usage dashboard theo org: requests, tokens, breakdown theo agent/key/model/status/time. *(Port analytics v1, thêm org-scoping)*
 - **FR-O5 [M]** Quota config theo org: rate limit per key/per end-user, concurrency cap, queue-depth. Operator đặt trần theo org; tenant admin phân bổ trong trần đó.
+  - **[S] Budget guardrail**: trần token/ngày per agent và per org (ta thực thi vòng lặp LLM *trên key của tenant* — guard tài chính bảo vệ tiền của khách, khác với max_iterations là guard kỹ thuật). Chạm trần → run mới bị từ chối với lý do tường minh; run đang chạy kết thúc sớm ở checkpoint kế tiếp, trace ghi rõ.
 - **FR-O6 [S]** Export trace/conversation (JSON) phục vụ audit nội bộ của tenant.
 - **FR-O7 [M]** End-user directory: tenant admin list/search end-users của org (end_user_id, metadata hiển thị, first/last seen, số conversation); từ một end-user mở được danh sách conversation của họ (cửa vào FR-O3). *Không phải* identity management — chỉ là danh bạ shadow records (xem FR-C1 JIT).
 - **FR-O8 [S]** Block end-user: tenant admin block/unblock; end-user bị block bị từ chối ở cả token exchange lẫn chat request (403), hiệu lực ≤ 60s (cùng cơ chế cache như thu hồi API key).
@@ -227,6 +230,10 @@ Các con số là **đề xuất ban đầu** `[CẦN CHỐT]` — quan trọng 
 - **NFR-T1** TDD; LLM/embedding mock 100% trong test; suite xanh ở mọi milestone; CI (GitHub Actions) chạy pytest + FE build từ M0.
 - **NFR-T2** Mọi task implementation phải reference FR/NFR ID trong PR/commit message.
 - **NFR-T3** Agent core (pure library) không import framework — enforce bằng test kiến trúc (import-linter hoặc test tự viết).
+
+### NFR-V — Versioning hợp đồng công khai
+
+- **NFR-V1** Mọi API công khai (token exchange, chat, conversation) nằm dưới prefix version (`/v2/...`); widget script có version trong URL (pin được, không auto-latest cho production). Breaking change = version mới song song, không sửa đè — kỷ luật này có hiệu lực từ design partner đầu tiên.
 
 ---
 
@@ -301,6 +308,16 @@ Sau mỗi milestone: cập nhật `progress.md`, demo chạy được end-to-end
 | Số NFR đặt sai (quá cao/thấp) | Baseline load test sớm (kéo một phần M5 lên chạy thô ngay sau M2), chỉnh số có căn cứ |
 | Postgres-queue: bloat/vacuum dưới churn cao; claim contention | Lease bằng cột + commit ngay (không giữ lock dài); autovacuum tuning; cleanup/retention job; load test M5 đo riêng scheduling path |
 | Keycloak: thêm JVM service, cấu hình sai realm/claim là lỗ hổng authn | Realm config as-code (export JSON vào repo, import khi khởi tạo); test integration authn ở CI với KC container; trang admin chết theo KC nhưng chat end-user (P4) không phụ thuộc KC |
+
+**Rủi ro chấp nhận có chủ đích ở v2** (không action, nhưng phải biết khi nói chuyện với khách/định giá):
+
+| Chấp nhận | Nội dung | Thời điểm phải xử lý |
+|---|---|---|
+| BYO-endpoint phải public-reachable | Worker SaaS gọi LLM endpoint của tenant qua internet — LLM nội bộ sau firewall của khách KHÔNG dùng được với bản SaaS. Khách enterprise có LLM internal cần connector/relay (backlog) hoặc self-host cả platform | Khi gặp khách đầu tiên có LLM internal — đừng hứa trước |
+| Prompt injection / tool abuse | End-user input và tài liệu upload đều là kênh injection vào LLM có quyền gọi tool của tenant. Mitigation v2: tenant admin kiểm soát tool nào gắn agent nào + max_iterations + budget cap + trace nhìn thấy hết. Guardrails nội dung: backlog. Threat model này phải nằm trong docs tích hợp để tenant cân nhắc khi gắn tool có quyền ghi | Trước khi khuyến khích tenant gắn MCP tool có side-effect |
+| "Operator không đọc nội dung tenant" là chính sách, chưa phải kỹ thuật | P1 có DB access nên về vật lý đọc được. Ổn khi solo-operator giai đoạn design partner | Trước khi thu tiền: audit log truy cập + kiểm soát thật (phase C) |
+| Postgres là điểm tựa duy nhất | State + queue + vector đều Postgres — HA/backup của Postgres chính là availability story. `run_events` chứa full LLM content: cần làm toán dung lượng khi load test (M5); partition theo tháng khi cần | M5 đo; partition khi dung lượng chứng minh cần |
+| Compliance theo thị trường (GDPR / NĐ13 PDPD VN) | Ảnh hưởng default retention, DPA, data residency — phụ thuộc `[CẦN CHỐT]` segment ở §2.2 | Chốt segment xong thì chốt số retention + template DPA |
 
 ---
 
