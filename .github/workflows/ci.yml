@@ -123,8 +123,10 @@ jobs:
           max_attempts=30
           attempt=0
           while [ $attempt -lt $max_attempts ]; do
+            # `|| true`: steps run under bash -e — without it the first
+            # connection-reset while Keycloak boots aborts the whole retry loop
             response=$(curl -s -w "\n%{http_code}" \
-              http://localhost:8080/realms/harness/protocol/openid-connect/certs)
+              http://localhost:8080/realms/harness/protocol/openid-connect/certs || true)
             http_code=$(echo "$response" | tail -n 1)
             body=$(echo "$response" | head -n -1)
 

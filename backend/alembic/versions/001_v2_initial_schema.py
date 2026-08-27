@@ -246,12 +246,13 @@ def downgrade() -> None:
     op.drop_index("ix_documents_knowledge_base_id", table_name="documents")
     op.drop_table("documents")
 
+    # kb_agents holds FKs to both knowledge_bases and agents — drop it first
+    op.drop_table("kb_agents")
+
     op.drop_constraint("uq_knowledge_bases_org_id_slug", table_name="knowledge_bases")
     op.drop_constraint("uq_knowledge_bases_org_id_name", table_name="knowledge_bases")
     op.drop_index("ix_knowledge_bases_org_id", table_name="knowledge_bases")
     op.drop_table("knowledge_bases")
-
-    op.drop_table("kb_agents")
 
     op.drop_constraint("uq_agents_org_id_name", table_name="agents")
     op.drop_index("ix_agents_org_id", table_name="agents")
