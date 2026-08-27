@@ -118,7 +118,7 @@ class TestRequireOperator:
             "sub": "user-123",
             "iss": test_issuer,
             "aud": test_audience,
-            "organizations": {"org-alias": {}},
+            "organization": {"org-alias": {}},
             "realm_access": {"roles": []},
         }
         token = make_token(claims)
@@ -159,7 +159,7 @@ class TestRequireOrgMember:
             "email": "admin@example.com",
             "iss": test_issuer,
             "aud": test_audience,
-            "organizations": {"org-alias": {}},
+            "organization": {"org-alias": {}},
             "realm_access": {"roles": ["org_owner"]},
         }
         token = make_token(claims)

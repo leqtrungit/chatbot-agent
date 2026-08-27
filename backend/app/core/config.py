@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     keycloak_issuer: str = "http://localhost:8080/realms/harness"
     keycloak_jwks_url: str = "http://localhost:8080/realms/harness/protocol/openid-connect/certs"
     keycloak_audience: str = "backend"
-    keycloak_org_claim: str = "organizations"
+    keycloak_org_claim: str = "organization"  # claim written by oidc-organization-membership-mapper (see infra/keycloak)
     keycloak_role_claim_path: str = "realm_access.roles"
     keycloak_operator_role: str = "operator"
 
