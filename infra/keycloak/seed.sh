@@ -17,16 +17,21 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
+# NOTE: these write to stderr (not stdout) deliberately. Several functions
+# below are called as `VAR=$(some_function ...)`, returning their result by
+# printing it as the last line of stdout; if log_* wrote to stdout too, that
+# line would get captured into VAR along with the real return value and
+# corrupt it (e.g. a user/org ID glued to a log message).
 log_info() {
-    echo -e "${GREEN}[seed]${NC} $*"
+    echo -e "${GREEN}[seed]${NC} $*" >&2
 }
 
 log_warn() {
-    echo -e "${YELLOW}[seed]${NC} $*"
+    echo -e "${YELLOW}[seed]${NC} $*" >&2
 }
 
 log_error() {
-    echo -e "${RED}[seed]${NC} $*"
+    echo -e "${RED}[seed]${NC} $*" >&2
 }
 
 # Wait for Keycloak to be ready (fetch well-known config)
@@ -206,7 +211,11 @@ wait_for_api() {
     exit 1
 }
 
-# Create organization via API
+# Create organization via API. Idempotent: if the org already exists, looks
+# it up instead of re-creating it. Either way, prints the org's Keycloak
+# Organization ID (OrgRead.keycloak_org_id) as the last line of stdout so
+# callers can do `KC_ORG_ID=$(create_org_via_api ...)` — the caller needs
+# this ID to add members to the Keycloak Organization afterwards.
 create_org_via_api() {
     local org_slug=$1
     local org_name=$2
@@ -226,13 +235,18 @@ create_org_via_api() {
         return 1
     fi
 
-    # Check if org already exists
+    # Check if org already exists; if so, read its Keycloak org ID off the
+    # listing instead of re-creating (idempotent path).
     local orgs_endpoint="${API_URL}/v2/operator/orgs"
     local existing_orgs=$(curl -sf "$orgs_endpoint" \
         -H "Authorization: Bearer ${operator_token}" 2>/dev/null || echo '[]')
 
-    if echo "$existing_orgs" | jq -e --arg slug "$org_slug" ".[] | select(.slug == \$slug)" > /dev/null 2>&1; then
-        log_info "Organization '${org_slug}' already exists via API, skipping."
+    local existing_kc_org_id=$(echo "$existing_orgs" | jq -r --arg slug "$org_slug" \
+        '[.[] | select(.slug == $slug) | .keycloak_org_id // empty][0] // empty')
+
+    if [ -n "$existing_kc_org_id" ]; then
+        log_info "Organization '${org_slug}' already exists via API (Keycloak org ID: ${existing_kc_org_id}), skipping creation."
+        echo "$existing_kc_org_id"
         return 0
     fi
 
@@ -251,14 +265,61 @@ EOF
         -d "$org_payload" 2>/dev/null || echo '{}')
 
     local org_id=$(echo "$create_response" | jq -r '.id // empty')
+    local kc_org_id=$(echo "$create_response" | jq -r '.keycloak_org_id // empty')
 
-    if [ -n "$org_id" ]; then
-        log_info "Created organization '${org_slug}' via API (ID: ${org_id})."
-        return 0
-    else
-        log_warn "Organization creation via API may have failed or already exists."
-        return 0
+    if [ -z "$org_id" ] || [ -z "$kc_org_id" ]; then
+        log_error "Failed to create organization '${org_slug}' via API. Response: ${create_response}"
+        return 1
     fi
+
+    log_info "Created organization '${org_slug}' via API (ID: ${org_id}, Keycloak org ID: ${kc_org_id})."
+    echo "$kc_org_id"
+    return 0
+}
+
+# Add an existing Keycloak user as a member of a Keycloak Organization.
+#
+# Endpoint verified against Keycloak 26.3 server source
+# (services/src/main/java/org/keycloak/organization/admin/resource/OrganizationMemberResource.java,
+# tag 26.3.0): POST /admin/realms/{realm}/organizations/{org-id}/members,
+# Content-Type: application/json, body is the user's UUID as a JSON string.
+# Returns 201 on success, 409 if the user is already a member of the
+# organization (idempotent no-op for us), anything else is a real failure.
+#
+# This is the step that was completely missing before this fix: without it,
+# the token minted for the tenant admin carries no `organization` claim
+# (oidc-organization-membership-mapper only emits a claim for orgs the user
+# actually belongs to), so every org-scoped route and GET /v2/me 403s.
+add_org_member() {
+    local kc_org_id=$1
+    local user_id=$2
+    local token=$3
+
+    local members_endpoint="${KEYCLOAK_URL}/admin/realms/${REALM}/organizations/${kc_org_id}/members"
+
+    local raw
+    raw=$(curl -s -w '\n%{http_code}' -X POST "$members_endpoint" \
+        -H "Authorization: Bearer ${token}" \
+        -H "Content-Type: application/json" \
+        -d "\"${user_id}\"" || echo -e "\n000")
+
+    local http_code=$(echo "$raw" | tail -n1)
+    local body=$(echo "$raw" | sed '$d')
+
+    case "$http_code" in
+        201)
+            log_info "Added user (ID: ${user_id}) as a member of Keycloak Organization (ID: ${kc_org_id})."
+            return 0
+            ;;
+        409)
+            log_info "User (ID: ${user_id}) is already a member of Keycloak Organization (ID: ${kc_org_id}), skipping."
+            return 0
+            ;;
+        *)
+            log_error "Failed to add user (ID: ${user_id}) to Keycloak Organization (ID: ${kc_org_id}) (HTTP ${http_code}): ${body}"
+            return 1
+            ;;
+    esac
 }
 
 # Print summary table
@@ -318,7 +379,18 @@ main() {
 
     log_info "Setting up organization via API..."
     wait_for_api
-    create_org_via_api "demo" "Demo Corp" "operator" "operator"
+    DEMO_KC_ORG_ID=$(create_org_via_api "demo" "Demo Corp" "operator" "operator")
+
+    log_info "Adding tenant admin to the demo Keycloak Organization..."
+    # Re-fetch the admin token rather than reusing the one from earlier in
+    # this script: enough time has passed waiting on Keycloak/API readiness
+    # that the original token may be close to (or past) its expiry.
+    MEMBER_ADMIN_TOKEN=$(get_admin_token)
+    if [ -z "$MEMBER_ADMIN_TOKEN" ]; then
+        log_error "Failed to get admin token for organization membership call."
+        exit 1
+    fi
+    add_org_member "$DEMO_KC_ORG_ID" "$ADMIN_ID" "$MEMBER_ADMIN_TOKEN"
 
     print_summary
 
