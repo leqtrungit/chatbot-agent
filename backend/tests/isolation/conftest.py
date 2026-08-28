@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_session
 from app.core.security import TenantPrincipal
-from app.identity.deps import require_org_member
+from app.identity.deps import authenticated_principal
 from app.main import create_app
 from app.orgs.models import Organization
 from app.agents.models import Agent
@@ -170,7 +170,7 @@ def isolation_app_org_a(
     """FastAPI app as org A principal with isolation DB."""
     app = create_app()
     app.dependency_overrides[get_session] = lambda: isolation_db_session
-    app.dependency_overrides[require_org_member] = lambda: org_a_principal
+    app.dependency_overrides[authenticated_principal] = lambda: org_a_principal
     return app
 
 
@@ -181,7 +181,7 @@ def isolation_app_org_b(
     """FastAPI app as org B principal with isolation DB."""
     app = create_app()
     app.dependency_overrides[get_session] = lambda: isolation_db_session
-    app.dependency_overrides[require_org_member] = lambda: org_b_principal
+    app.dependency_overrides[authenticated_principal] = lambda: org_b_principal
     return app
 
 

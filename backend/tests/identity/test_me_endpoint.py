@@ -21,35 +21,11 @@ from app.identity.router import router as identity_router
 from app.orgs.models import Organization
 
 
-class _FakeSession:
-    """Fake session for testing without real database."""
-
-    def __init__(self, orgs: dict[str, Organization]):
-        self._orgs = orgs  # keyed by slug
-
-    async def execute(self, stmt):
-        """Mock execute for query statements."""
-        # Handle SELECT Organization queries
-        if hasattr(stmt, 'froms') and Organization in stmt.froms:
-            # Very basic query simulation - check for slug filter
-            if hasattr(stmt, 'whereclause') and stmt.whereclause is not None:
-                # For now, return None - tests will override as needed
-                pass
-
-        class FakeResult:
-            def __init__(self, org: Organization | None = None):
-                self._org = org
-
-            def scalar_one_or_none(self):
-                return self._org
-
-        return FakeResult()
-
-
 def _make_app(
     verifier: JWKSVerifier,
     test_issuer: str = "http://localhost:8080/realms/harness",
     test_audience: str = "backend",
+    session: AsyncSession | None = None,
 ) -> FastAPI:
     """Create test FastAPI app with mocked dependencies."""
     app = FastAPI()
@@ -59,6 +35,9 @@ def _make_app(
 
     # Store JWKSVerifier in app state
     app.state.jwks_verifier = verifier
+
+    if session is not None:
+        app.dependency_overrides[get_session] = lambda: session
 
     return app
 
@@ -259,7 +238,7 @@ class TestMeEndpointWithDatabase:
         await session.commit()
 
         verifier = JWKSVerifier(jwks_dict=jwks_dict)
-        app = _make_app(verifier, test_issuer, test_audience)
+        app = _make_app(verifier, test_issuer, test_audience, session=session)
 
         # Create tenant token
         token = make_token(
@@ -319,7 +298,7 @@ class TestMeEndpointWithDatabase:
         await session.commit()
 
         verifier = JWKSVerifier(jwks_dict=jwks_dict)
-        app = _make_app(verifier, test_issuer, test_audience)
+        app = _make_app(verifier, test_issuer, test_audience, session=session)
 
         # Create tenant token for suspended org
         token = make_token(
@@ -359,7 +338,7 @@ class TestMeEndpointWithDatabase:
         """Tenant with org alias not in database returns 404."""
         # Don't create any organizations - test empty DB
         verifier = JWKSVerifier(jwks_dict=jwks_dict)
-        app = _make_app(verifier, test_issuer, test_audience)
+        app = _make_app(verifier, test_issuer, test_audience, session=session)
 
         # Create tenant token with org alias "acme" that doesn't exist in DB
         token = make_token(
@@ -411,7 +390,7 @@ class TestMeEndpointWithDatabase:
         await session.commit()
 
         verifier = JWKSVerifier(jwks_dict=jwks_dict)
-        app = _make_app(verifier, test_issuer, test_audience)
+        app = _make_app(verifier, test_issuer, test_audience, session=session)
 
         # Create token with different org alias
         token = make_token(
