@@ -147,3 +147,56 @@ async def require_org_member(
     # - Return 403 if org is suspended or org_id doesn't match
 
     return principal
+
+
+async def require_any_principal(
+    request: Request,
+    authorization: Annotated[str | None, Header()] = None,
+) -> OperatorPrincipal | TenantPrincipal:
+    """FastAPI dependency to verify authentication (operator or tenant).
+
+    Validates JWT token from Authorization header and extracts either
+    OperatorPrincipal or TenantPrincipal.
+
+    This is less restrictive than require_operator or require_org_member,
+    accepting both types of principals. Useful for endpoints that work
+    for both operators and tenants (e.g., GET /v2/me).
+
+    Args:
+        request: FastAPI request object.
+        authorization: Authorization header (Bearer token).
+
+    Returns:
+        OperatorPrincipal or TenantPrincipal if token is valid.
+
+    Raises:
+        HTTPException: 401 if token is missing or invalid; 403 if unauthorized.
+    """
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Missing Authorization header")
+
+    # Extract Bearer token
+    parts = authorization.split()
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        raise HTTPException(status_code=401, detail="Invalid Authorization header format")
+
+    token = parts[1]
+    settings = get_settings()
+    verifier = await get_jwks_verifier(request)
+
+    try:
+        claims = await verifier.verify_async(
+            token,
+            issuer=settings.keycloak_issuer,
+            audience=settings.keycloak_audience,
+            jwks_url=settings.keycloak_jwks_url,
+        )
+    except PyJWTError as e:
+        raise HTTPException(status_code=401, detail=f"Invalid token: {str(e)}")
+
+    try:
+        principal = extract_principal(claims, settings)
+    except (MultipleOrgsError, UnauthorizedPrincipalError) as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
+    return principal

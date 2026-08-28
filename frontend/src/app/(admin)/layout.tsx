@@ -1,18 +1,16 @@
 "use client";
 
+import { useEffect } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useState, useSyncExternalStore } from "react";
+import { useSyncExternalStore } from "react";
 import { useTheme } from "next-themes";
 import {
   BotIcon,
   FolderKanban,
   KeyRound,
-  LayoutDashboard,
   LogOut,
-  MessageSquare,
   MoonIcon,
-  PlugZap,
   SunIcon,
   User,
 } from "lucide-react";
@@ -26,16 +24,14 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { clearAuthToken } from "@/lib/auth";
+import { logout, isLoggedIn } from "@/lib/auth";
 import { cn } from "@/lib/utils";
 import { EmberMark } from "@/components/ember-mark";
-import { PlaygroundDrawer } from "@/components/playground-drawer";
+import { parseToken } from "@/lib/auth";
 
 const NAV_ITEMS = [
-  { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/domains", label: "Domains", icon: FolderKanban },
+  { href: "/domains", label: "Knowledge Bases", icon: FolderKanban },
   { href: "/agents", label: "Agents", icon: BotIcon },
-  { href: "/mcp-servers", label: "MCP Servers", icon: PlugZap },
   { href: "/api-keys", label: "API Keys", icon: KeyRound },
 ];
 
@@ -90,12 +86,27 @@ export default function AdminLayout({
 }) {
   const pathname = usePathname();
   const router = useRouter();
-  const [playgroundOpen, setPlaygroundOpen] = useState(false);
+  const mounted = useMounted();
+
+  useEffect(() => {
+    if (!mounted) return;
+
+    // Check if logged in, redirect to login if not
+    if (!isLoggedIn()) {
+      router.replace("/login");
+    }
+  }, [mounted, router]);
+
+  if (!mounted || !isLoggedIn()) {
+    return null; // Prevent hydration mismatch and protect route
+  }
+
+  // Get username from token
+  const payload = parseToken();
+  const username = payload?.preferred_username || "User";
 
   function handleLogout() {
-    clearAuthToken();
-    router.push("/login");
-    router.refresh();
+    logout();
   }
 
   return (
@@ -121,14 +132,6 @@ export default function AdminLayout({
                 </Link>
               );
             })}
-            <button
-              type="button"
-              onClick={() => setPlaygroundOpen(true)}
-              className={navItemClass(playgroundOpen)}
-            >
-              <MessageSquare className="size-4" />
-              Playground
-            </button>
           </nav>
 
           <div className="flex items-center justify-between gap-1 border-t border-border/70 px-3 py-3">
@@ -142,7 +145,7 @@ export default function AdminLayout({
                 }
               />
               <DropdownMenuContent align="end">
-                <DropdownMenuItem disabled>admin</DropdownMenuItem>
+                <DropdownMenuItem disabled>{username || "User"}</DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem variant="destructive" onClick={handleLogout}>
                   <LogOut className="size-4" />
@@ -157,7 +160,6 @@ export default function AdminLayout({
           {children}
         </main>
 
-        <PlaygroundDrawer open={playgroundOpen} onOpenChange={setPlaygroundOpen} />
         <Toaster />
       </div>
     </TooltipProvider>

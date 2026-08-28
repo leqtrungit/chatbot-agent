@@ -35,40 +35,82 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { ApiError, createDomain, deleteDomain, listDomains, updateDomain } from "@/lib/api";
-import type { Domain } from "@/lib/types";
+import {
+  ApiError,
+  createKnowledgeBase,
+  deleteKnowledgeBase,
+  listKnowledgeBases,
+  updateKnowledgeBase,
+} from "@/lib/api";
+import type { KnowledgeBase } from "@/lib/types";
+import { resolveOrgId } from "@/lib/org";
 
-interface DomainFormState {
+interface KBFormState {
   name: string;
   slug: string;
   description: string;
 }
 
-const EMPTY_FORM: DomainFormState = { name: "", slug: "", description: "" };
+const EMPTY_FORM: KBFormState = { name: "", slug: "", description: "" };
 
-export default function DomainsPage() {
-  const [domains, setDomains] = useState<Domain[]>([]);
+export default function KnowledgeBasesPage() {
+  const [orgId, setOrgId] = useState<string | null>(null);
+  const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   const [createOpen, setCreateOpen] = useState(false);
-  const [createForm, setCreateForm] = useState<DomainFormState>(EMPTY_FORM);
+  const [createForm, setCreateForm] = useState<KBFormState>(EMPTY_FORM);
   const [creating, setCreating] = useState(false);
 
-  const [editTarget, setEditTarget] = useState<Domain | null>(null);
-  const [editForm, setEditForm] = useState<DomainFormState>(EMPTY_FORM);
+  const [editTarget, setEditTarget] = useState<KnowledgeBase | null>(null);
+  const [editForm, setEditForm] = useState<KBFormState>(EMPTY_FORM);
   const [editing, setEditing] = useState(false);
 
-  const [deleteTarget, setDeleteTarget] = useState<Domain | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<KnowledgeBase | null>(null);
   const [deleting, setDeleting] = useState(false);
 
+  // Initialize org_id
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const resolved = await resolveOrgId();
+        if (!cancelled) {
+          if (!resolved) {
+            setError(
+              "Unable to resolve organization. Backend needs /v2/me endpoint or you need to set org_id manually."
+            );
+            setLoading(false);
+            return;
+          }
+          setOrgId(resolved);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(
+            err instanceof Error ? err.message : "Failed to initialize organization"
+          );
+          setLoading(false);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   async function refresh() {
+    if (!orgId) return;
     setLoading(true);
     try {
-      const data = await listDomains();
-      setDomains(data);
+      const data = await listKnowledgeBases(orgId);
+      setKnowledgeBases(data);
     } catch (err) {
       if (err instanceof ApiError && err.status !== 401) {
-        toast.error("Failed to load domains", { description: err.message });
+        toast.error("Failed to load knowledge bases", { description: err.message });
       }
     } finally {
       setLoading(false);
@@ -76,15 +118,17 @@ export default function DomainsPage() {
   }
 
   useEffect(() => {
+    if (!orgId) return;
+
     let cancelled = false;
     (async () => {
       setLoading(true);
       try {
-        const data = await listDomains();
-        if (!cancelled) setDomains(data);
+        const data = await listKnowledgeBases(orgId);
+        if (!cancelled) setKnowledgeBases(data);
       } catch (err) {
         if (!cancelled && err instanceof ApiError && err.status !== 401) {
-          toast.error("Failed to load domains", { description: err.message });
+          toast.error("Failed to load knowledge bases", { description: err.message });
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -93,33 +137,36 @@ export default function DomainsPage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [orgId]);
 
-  const sortedDomains = useMemo(
+  const sortedKBs = useMemo(
     () =>
-      [...domains].sort(
+      [...knowledgeBases].sort(
         (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
       ),
-    [domains]
+    [knowledgeBases]
   );
 
   async function handleCreate(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!orgId) return;
     setCreating(true);
     try {
-      await createDomain({
+      await createKnowledgeBase(orgId, {
         name: createForm.name.trim(),
         slug: createForm.slug.trim() || undefined,
         description: createForm.description.trim() || undefined,
       });
-      toast.success("Domain created");
+      toast.success("Knowledge base created");
       setCreateOpen(false);
       setCreateForm(EMPTY_FORM);
       refresh();
     } catch (err) {
       if (err instanceof ApiError) {
         toast.error(
-          err.status === 409 ? "A domain with that name or slug already exists" : "Failed to create domain",
+          err.status === 409
+            ? "A knowledge base with that name or slug already exists"
+            : "Failed to create knowledge base",
           { description: err.message }
         );
       }
@@ -128,32 +175,34 @@ export default function DomainsPage() {
     }
   }
 
-  function openEdit(domain: Domain) {
-    setEditTarget(domain);
+  function openEdit(kb: KnowledgeBase) {
+    setEditTarget(kb);
     setEditForm({
-      name: domain.name,
-      slug: domain.slug,
-      description: domain.description ?? "",
+      name: kb.name,
+      slug: kb.slug,
+      description: kb.description ?? "",
     });
   }
 
   async function handleEdit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!editTarget) return;
+    if (!editTarget || !orgId) return;
     setEditing(true);
     try {
-      await updateDomain(editTarget.id, {
+      await updateKnowledgeBase(orgId, editTarget.id, {
         name: editForm.name.trim(),
         slug: editForm.slug.trim() || undefined,
         description: editForm.description.trim() || undefined,
       });
-      toast.success("Domain updated");
+      toast.success("Knowledge base updated");
       setEditTarget(null);
       refresh();
     } catch (err) {
       if (err instanceof ApiError) {
         toast.error(
-          err.status === 409 ? "A domain with that name or slug already exists" : "Failed to update domain",
+          err.status === 409
+            ? "A knowledge base with that name or slug already exists"
+            : "Failed to update knowledge base",
           { description: err.message }
         );
       }
@@ -163,38 +212,51 @@ export default function DomainsPage() {
   }
 
   async function handleDelete() {
-    if (!deleteTarget) return;
+    if (!deleteTarget || !orgId) return;
     setDeleting(true);
     try {
-      await deleteDomain(deleteTarget.id);
-      toast.success("Domain deleted");
+      await deleteKnowledgeBase(orgId, deleteTarget.id);
+      toast.success("Knowledge base deleted");
       setDeleteTarget(null);
       refresh();
     } catch (err) {
       if (err instanceof ApiError) {
-        toast.error("Failed to delete domain", { description: err.message });
+        toast.error("Failed to delete knowledge base", { description: err.message });
       }
     } finally {
       setDeleting(false);
     }
   }
 
+  if (error) {
+    return (
+      <div className="flex flex-col gap-6">
+        <div>
+          <h1 className="font-heading text-3xl tracking-tight">Knowledge Bases</h1>
+        </div>
+        <div className="rounded-lg border border-destructive/20 bg-destructive/5 p-4 text-sm text-destructive">
+          {error}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="font-heading text-3xl tracking-tight">Domains</h1>
+          <h1 className="font-heading text-3xl tracking-tight">Knowledge Bases</h1>
           <p className="text-sm text-muted-foreground">
-            Manage knowledge domains and their documents.
+            Manage knowledge bases and their documents.
           </p>
         </div>
         <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-          <DialogTrigger render={<Button><Plus />New domain</Button>} />
+          <DialogTrigger render={<Button><Plus />New knowledge base</Button>} />
           <DialogContent>
             <DialogHeader>
-              <DialogTitle>New domain</DialogTitle>
+              <DialogTitle>New knowledge base</DialogTitle>
               <DialogDescription>
-                Create a new knowledge domain for your chatbot.
+                Create a new knowledge base for your chatbot.
               </DialogDescription>
             </DialogHeader>
             <form onSubmit={handleCreate} className="flex flex-col gap-4">
@@ -235,7 +297,7 @@ export default function DomainsPage() {
               <DialogFooter>
                 <Button type="submit" disabled={creating}>
                   {creating ? <Loader2Icon className="animate-spin" /> : null}
-                  Create domain
+                  Create knowledge base
                 </Button>
               </DialogFooter>
             </form>
@@ -258,49 +320,55 @@ export default function DomainsPage() {
             {loading ? (
               <TableRow>
                 <TableCell colSpan={5} className="py-8 text-center text-muted-foreground">
-                  Loading domains...
+                  Loading knowledge bases...
                 </TableCell>
               </TableRow>
-            ) : sortedDomains.length === 0 ? (
+            ) : sortedKBs.length === 0 ? (
               <TableRow>
                 <TableCell colSpan={5} className="py-14 text-center">
                   <div className="flex flex-col items-center gap-2 text-muted-foreground">
                     <FolderKanban className="size-6 opacity-50" />
-                    <p className="text-sm">No domains yet. Create one to get started.</p>
+                    <p className="text-sm">No knowledge bases yet. Create one to get started.</p>
                   </div>
                 </TableCell>
               </TableRow>
             ) : (
-              sortedDomains.map((domain) => (
+              sortedKBs.map((kb) => (
                 <TableRow
-                  key={domain.id}
+                  key={kb.id}
                   className="border-l-2 border-l-transparent transition-colors hover:border-l-primary hover:bg-accent/30"
                 >
                   <TableCell className="font-medium">
                     <Link
-                      href={`/domains/${domain.id}`}
+                      href={`/domains/${kb.id}`}
                       className="hover:text-primary hover:underline"
                     >
-                      {domain.name}
+                      {kb.name}
                     </Link>
                   </TableCell>
-                  <TableCell className="font-mono text-xs text-muted-foreground">{domain.slug}</TableCell>
+                  <TableCell className="font-mono text-xs text-muted-foreground">{kb.slug}</TableCell>
                   <TableCell className="max-w-xs truncate text-muted-foreground">
-                    {domain.description || "—"}
+                    {kb.description || "—"}
                   </TableCell>
                   <TableCell className="text-muted-foreground">
-                    {new Date(domain.created_at).toLocaleDateString()}
+                    {new Date(kb.created_at).toLocaleDateString()}
                   </TableCell>
                   <TableCell className="text-right">
                     <div className="flex items-center justify-end gap-1">
-                      <Button variant="ghost" size="icon-sm" render={<Link href={`/domains/${domain.id}`} />} nativeButton={false} aria-label="Documents">
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        render={<Link href={`/domains/${kb.id}`} />}
+                        nativeButton={false}
+                        aria-label="Documents"
+                      >
                         <FileText />
                       </Button>
                       <Button
                         variant="ghost"
                         size="icon-sm"
                         aria-label="Edit"
-                        onClick={() => openEdit(domain)}
+                        onClick={() => openEdit(kb)}
                       >
                         <PencilIcon />
                       </Button>
@@ -308,7 +376,7 @@ export default function DomainsPage() {
                         variant="ghost"
                         size="icon-sm"
                         aria-label="Delete"
-                        onClick={() => setDeleteTarget(domain)}
+                        onClick={() => setDeleteTarget(kb)}
                       >
                         <Trash2Icon />
                       </Button>
@@ -324,8 +392,8 @@ export default function DomainsPage() {
       <Dialog open={!!editTarget} onOpenChange={(open) => !open && setEditTarget(null)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Edit domain</DialogTitle>
-            <DialogDescription>Update the domain&apos;s details.</DialogDescription>
+            <DialogTitle>Edit knowledge base</DialogTitle>
+            <DialogDescription>Update the knowledge base&apos;s details.</DialogDescription>
           </DialogHeader>
           <form onSubmit={handleEdit} className="flex flex-col gap-4">
             <div className="flex flex-col gap-2">
@@ -372,7 +440,7 @@ export default function DomainsPage() {
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete domain?</AlertDialogTitle>
+            <AlertDialogTitle>Delete knowledge base?</AlertDialogTitle>
             <AlertDialogDescription>
               This will permanently delete &quot;{deleteTarget?.name}&quot; and all of
               its documents. This action cannot be undone.

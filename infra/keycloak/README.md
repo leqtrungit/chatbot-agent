@@ -1,282 +1,259 @@
-# Keycloak Realm as-Code
+# Keycloak Realm & Seeding
 
-This directory contains the Keycloak realm configuration as JSON (`realm-export.json`), automatically imported when the Keycloak container starts.
+This directory contains the Keycloak realm configuration and seed data for the chatbot-agent platform.
 
-## Quick Start
+## Quick Start with Docker Compose
 
-### 1. Start Keycloak with its database
+The entire stack (database, API, frontend, Keycloak, and seed data) is brought up with one command:
 
 ```bash
-docker compose up -d kc-postgres keycloak
+# Copy example config (adjust passwords if needed)
+cp .env.example .env
+
+# Bring up all services
+docker compose up -d --build
+
+# Wait for all services to be healthy (usually 30-60 seconds)
+docker compose ps
+
+# When all services show "healthy" or are running:
+# - Admin UI: http://localhost:3000
+# - API: http://localhost:8000
+# - Keycloak Admin: http://localhost:8080/admin
 ```
 
-Wait for both services to be healthy (check with `docker compose ps`).
+## What Gets Seeded
 
-### 2. Access Keycloak Admin Console
+The `kc-seed` service runs automatically after both Keycloak and the API are ready, creating:
 
-- URL: http://localhost:8080/admin
-- Bootstrap credentials: `admin` / `admin`
+### Users & Roles
 
-The realm `harness` should be automatically imported. You'll see it in the realm selector dropdown (top-left).
+1. **Operator Account** (platform administrator)
+   - Username: `operator`
+   - Password: `operator`
+   - Realm Role: `operator`
+   - Used to create and manage organizations and tenants
 
-## Realm Configuration Summary
+2. **Demo Tenant Admin**
+   - Username: `admin@demo.local`
+   - Password: `demo`
+   - Role: Admin of the `demo` organization (auto-created)
 
-**Realm name**: `harness`
+### Organizations
 
-- **Status**: Enabled
-- **User registration**: Disabled (no self-signup)
-- **Organizations**: Enabled (Keycloak 26 feature)
-- **Realm role**: `operator` (for platform operators)
+- **Demo Organization** (slug: `demo`)
+  - Display name: "Demo Corp"
+  - Members: `admin@demo.local` (as admin)
+  - This organization is ready to use immediately after seeding
+
+## Logging In
+
+### Admin UI (Frontend)
+
+1. Go to http://localhost:3000
+2. Click **Sign In**
+3. Use either:
+   - **Operator**: username `operator` / password `operator` → can create and manage organizations
+   - **Tenant Admin**: username `admin@demo.local` / password `demo` → manages only the `demo` org
+
+### Keycloak Admin Console
+
+1. Go to http://localhost:8080/admin
+2. Username: `admin`
+3. Password: `admin`
+4. The realm `harness` is automatically imported and visible in the realm selector (top-left)
+
+## Architecture Notes
+
+### Token Claims & Hostname Handling
+
+When the browser fetches a token via OIDC, Keycloak returns a token with claim `iss` (issuer) set to the URL the browser used to reach it. The API backend must verify this `iss` claim against a configured value.
+
+The docker-compose stack handles this correctly:
+
+- **KEYCLOAK_ISSUER** (env): `http://localhost:8080/realms/harness`
+  - The issuer value expected in tokens (matches browser's perspective)
+  - Browser reaches Keycloak via `http://localhost:8080`
+
+- **KEYCLOAK_JWKS_URL** (env): `http://keycloak:8080/realms/harness/protocol/openid-connect/certs`
+  - Where the backend API fetches public keys to verify tokens
+  - Uses `keycloak` (container-internal hostname) because the API runs in the same network
+
+- **KC_HOSTNAME** (Keycloak env): `http://localhost:8080`
+  - Tells Keycloak to set `iss` and redirect URIs relative to `http://localhost:8080`
+  - Without this, Keycloak might use container's internal hostname, breaking token verification
+
+**These MUST differ in host part** (localhost vs keycloak) — it's not a bug.
+
+## Realm Configuration
+
+**Realm Name**: `harness`
 
 ### Clients
 
-1. **admin-ui** (Public, OIDC)
-   - Protocol: OpenID Connect
-   - Flow: Authorization Code + PKCE (S256)
+1. **admin-ui** (Public OIDC)
    - Redirect URIs: `http://localhost:3000/*`
    - Web Origins: `http://localhost:3000`
-   - Direct Access Grants: Disabled
-   - Default scopes: `web-origins`, `profile`, `email`, `roles`, `acr`, `organizations`, `audience`
+   - Flow: Authorization Code + PKCE (S256)
+   - Direct Access Grants: **Disabled** (no password grant)
+   - Scopes: web-origins, profile, email, roles, acr, organizations, audience
+   - Used by the frontend admin UI
 
 2. **backend** (Bearer-only)
-   - Protocol: OpenID Connect
-   - No authentication flows enabled
-   - Used only as an audience for token verification (non-interactive)
+   - No interactive flows
+   - Used only for token verification (audience check)
 
-## Creating the First Platform Operator
+3. **seed-cli** (Public OIDC, Development Only)
+   - Flow: Direct Access Grants (Resource Owner Password) enabled
+   - Scopes: profile, email, roles, audience
+   - Used **only** by the seed script for automated setup; do not use in production
+   - This is a convenience for local development — never enable password grant on a production client
 
-### Step 1: Create a user in Keycloak
+### Roles
 
-1. Go to http://localhost:8080/admin/master/console/#/realms/harness/users
-2. Click "Create new user"
-3. Fill in:
-   - Username: `operator1` (or your choice)
-   - Email: `operator@example.com`
-   - First name, Last name: optional
-   - Email Verified: toggle ON
-   - Enabled: toggle ON
-4. Click "Create"
+- **operator**: Platform operators who create and manage organizations
 
-### Step 2: Set a temporary password
+### Organizations Feature
 
-1. On the new user's page, go to the "Credentials" tab
-2. Click "Set Password"
-3. Enter a password (e.g., `TempPassword123!`)
-4. Toggle "Temporary" OFF (so user doesn't have to change on first login)
-5. Click "Set Password"
+Keycloak 26+ organizations are enabled for multi-tenant support. An organization:
+- Has a unique slug (e.g., `demo`)
+- Has members with roles (owner, admin, member, etc.)
+- Is referenced in tokens via the `organization` claim (when user is a member)
 
-### Step 3: Assign realm role `operator`
-
-1. On the user's page, go to the "Role mapping" tab
-2. Click "Assign role"
-3. Filter for realm roles and select `operator`
-4. Click "Assign"
-
-### Verify operator access
-
-Log out and log back in with the operator account at http://localhost:8080/admin. You should see the realm `harness` and be able to manage it.
-
-## Creating Organizations
-
-### Step 1: Create an organization
-
-1. In the `harness` realm, go to **Organizations** (left sidebar, under "Configure")
-2. Click "Create"
-3. Fill in:
-   - Name: `acme-corp` (example tenant company)
-   - Display name: `ACME Corporation`
-4. Click "Create"
-
-Note: The organization is now available for management. Organization ID is auto-generated.
-
-### Step 2: Add a tenant admin to the organization
-
-#### Option A: Add existing user to organization
-
-1. Go to the organization's "Members" tab
-2. Click "Add member"
-3. Select an existing user (or create one first via Users menu)
-4. For each member, assign a role within the organization:
-   - **owner** — full permissions (manages members, agents, knowledge bases, API keys)
-   - **admin** — all permissions except member management
-5. Click "Add"
-
-#### Option B: Create a user and add to organization
-
-1. Create a new user via Users menu (see "Creating the First Platform Operator" section above)
-2. Do NOT assign the realm role `operator`
-3. Go to Organizations → `acme-corp` → Members → Add member
-4. Select the new user and assign role (e.g., `owner` or `admin`)
-
-## Access Token Claims
-
-When a tenant admin (organization member) logs in via the **admin-ui** client using OIDC Authorization Code + PKCE flow, they receive an access token with the following claims:
-
-### Standard OIDC Claims
-
+The `organization` claim includes:
 ```json
 {
-  "exp": 1234567890,
-  "iat": 1234567890,
-  "auth_time": 1234567890,
-  "jti": "...",
-  "iss": "http://localhost:8080/realms/harness",
-  "sub": "user-uuid",
-  "typ": "Bearer",
-  "azp": "admin-ui",
-  "sid": "session-id",
-  "acr": "1",
-  "name": "User Full Name",
-  "preferred_username": "username",
-  "given_name": "First",
-  "family_name": "Last",
-  "email": "user@example.com",
-  "email_verified": true
+  "id": "org-uuid",
+  "name": "demo",
+  "realm": "harness"
 }
 ```
 
-### Custom Claims (Tenant & Organization Context)
+## Seed Script Details
 
-**Organization claim** (added via `oidc-organization-membership-mapper`):
+The seed script (`seed.sh`) is idempotent — it's safe to run multiple times:
 
-```json
-{
-  "organization": {
-    "id": "organization-uuid",
-    "name": "acme-corp",
-    "realm": "harness"
-  }
-}
+1. Waits for Keycloak to be healthy (polls `/.well-known/openid-configuration`)
+2. Authenticates as `admin` user (from `KC_BOOTSTRAP_ADMIN_USERNAME/PASSWORD`)
+3. Creates users if they don't exist (checks by username)
+4. Sets passwords for new users
+5. Assigns realm roles
+6. Waits for the API to be healthy
+7. Gets an `operator` token via the `seed-cli` client (which has password grant enabled)
+8. Calls `POST /v2/operator/orgs` to create the `demo` organization
+9. Prints a summary of endpoints and credentials
+
+If the script runs again (e.g., after restarting containers), it skips creation steps for users and orgs that already exist.
+
+**Key fix**: The script uses the `seed-cli` client for obtaining the operator token, not `admin-ui`. This is because `admin-ui` is intentionally locked to Authorization Code + PKCE flow for security (no direct password grant). The `seed-cli` client is a public client with password grant enabled, but only for local development.
+
+## Manual User/Org Management
+
+To create additional users or organizations:
+
+### Via Keycloak Admin Console
+
+1. Go to http://localhost:8080/admin
+2. Select realm `harness` (top-left dropdown)
+3. Left sidebar → **Users** or **Organizations**
+4. Click **Create**
+
+### Via Backend API (Recommended)
+
+For organizations, use the backend API to ensure both Keycloak and the database are kept in sync:
+
+```bash
+# Get an operator token (using seed-cli which allows password grant)
+TOKEN=$(curl -s http://localhost:8080/realms/harness/protocol/openid-connect/token \
+  -d "client_id=seed-cli&username=operator&password=operator&grant_type=password" \
+  | jq -r .access_token)
+
+# Create organization
+curl -X POST http://localhost:8000/v2/operator/orgs \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "slug": "acme-corp",
+    "name": "ACME Corporation"
+  }'
 ```
 
-Note: This claim appears when the user is a member of at least one organization. If not a member of any organization, the claim may be absent or null depending on Keycloak version.
+**Note**: The `seed-cli` client is designed for development and automated scripts. In production, use the web UI (Authorization Code + PKCE flow) to obtain tokens.
 
-**Roles claim** (realm roles):
+## Realm Import & Export
 
-```json
-{
-  "realm_access": {
-    "roles": ["operator"]  // if user has operator role
-  }
-}
+The Keycloak realm is defined in `realm-export.json` and automatically imported when the `keycloak` container starts (via `--import-realm` command).
+
+To export the current realm configuration (e.g., after manual changes):
+
+```bash
+docker exec chatbot-keycloak /opt/keycloak/bin/kc.sh export \
+  --realm harness \
+  --file /tmp/realm-export.json
+
+docker cp chatbot-keycloak:/tmp/realm-export.json ./infra/keycloak/realm-export.json
 ```
 
-**Audience claim** (added via `oidc-audience-mapper`):
-
-```json
-{
-  "aud": ["backend", "admin-ui"]
-}
-```
-
-### Complete Example Token Payload (decoded)
-
-```json
-{
-  "exp": 1693150190,
-  "iat": 1693146590,
-  "auth_time": 1693146590,
-  "jti": "abc123def456",
-  "iss": "http://localhost:8080/realms/harness",
-  "sub": "550e8400-e29b-41d4-a716-446655440000",
-  "typ": "Bearer",
-  "azp": "admin-ui",
-  "sid": "session-xyz",
-  "acr": "1",
-  "name": "Alice Admin",
-  "preferred_username": "alice",
-  "given_name": "Alice",
-  "family_name": "Admin",
-  "email": "alice@acme.com",
-  "email_verified": true,
-  "organization": {
-    "id": "org-550e8400",
-    "name": "acme-corp",
-    "realm": "harness"
-  },
-  "realm_access": {
-    "roles": []
-  },
-  "aud": ["backend", "admin-ui"]
-}
-```
-
-## Backend Token Verification
-
-The **backend** application verifies access tokens by:
-
-1. Fetching the JWKS endpoint at `http://localhost:8080/realms/harness/protocol/openid-connect/certs`
-2. Verifying the token's signature using the public key from JWKS
-3. Validating the `iss` (issuer), `exp` (expiration), and `aud` (audience) claims
-4. Extracting the `organization` claim to determine which tenant the request belongs to
-5. Extracting `realm_access.roles` to check if user has `operator` role (for operator-only endpoints)
-
-No client secret is needed for token verification — it's stateless and public-key based.
-
-## Organization Membership Mapper (Technical Details)
-
-The organization membership claim is added via the **oidc-organization-membership-mapper** protocol mapper on the `organizations` client scope:
-
-- **Mapper type**: `oidc-organization-membership-mapper` (built-in Keycloak 26+)
-- **Claim name**: `organization` (mapped to access token)
-- **Claim value**: JSON object with `id`, `name`, `realm` fields
-
-If the mapper is missing or not working as expected, check:
-1. The realm export (`realm-export.json`) is correctly loaded
-2. The `organizations` client scope exists
-3. The `admin-ui` client includes `organizations` in default scopes
-4. The Keycloak container logs for import errors: `docker logs chatbot-keycloak`
-
-### Fallback (if organization membership claim is missing)
-
-If Keycloak version or configuration doesn't support `oidc-organization-membership-mapper`, an alternative is to use **Keycloak Groups** as a fallback:
-
-1. Create groups matching organization names (e.g., group `acme-corp`)
-2. Add users to those groups
-3. Use `oidc-group-membership-mapper` to map groups to a token claim (e.g., claim name: `org_groups`)
-
-This approach maps organization membership to token roles/groups instead of a dedicated `organization` claim.
+Then commit the updated `realm-export.json` to version control.
 
 ## Troubleshooting
 
-### Keycloak won't start
+### Seed script doesn't run or fails
 
 Check logs:
 ```bash
-docker logs chatbot-keycloak
+docker logs chatbot-kc-seed
 ```
 
 Common issues:
-- `kc-postgres` not healthy: Check `docker logs chatbot-kc-postgres`
-- Port 8080 already in use: Change port in `docker-compose.yml`
-- Realm import failed: Validate `realm-export.json` JSON syntax
+- Keycloak not healthy: `docker logs chatbot-keycloak`
+- API not ready: `docker logs chatbot-api`
+- Seed script permissions: `chmod +x ./infra/keycloak/seed.sh`
 
-### Token missing organization claim
+### Login fails or redirects to 404
 
-1. Verify user is a member of at least one organization (Orgs → Members tab)
-2. Verify the `admin-ui` client includes `organizations` in default client scopes
-3. Re-export realm from KC admin console and compare with `realm-export.json`
+1. Check Keycloak is running: `docker compose ps keycloak`
+2. Verify `admin-ui` client has correct redirect URI: `http://localhost:3000/*`
+3. Verify frontend can reach Keycloak: `curl http://localhost:8080` from browser console
 
-### Login redirects to 404
+### Token verification fails on API
 
-Ensure redirect URI in `admin-ui` client matches FE URL exactly. Default is `http://localhost:3000/*`.
+1. Verify token claim `iss` matches `KEYCLOAK_ISSUER` env var
+2. Check `KEYCLOAK_JWKS_URL` is reachable from API container: `docker exec chatbot-api curl http://keycloak:8080/realms/harness/protocol/openid-connect/certs`
+3. Check API logs: `docker logs chatbot-api`
 
-## Cleanup (Development)
+### "User already exists" errors when re-running seed
 
-To remove test users/orgs:
-
-```bash
-# Log in to admin console, or use Admin API
-curl -X DELETE http://localhost:8080/admin/realms/harness/users/{user-id} \
-  -H "Authorization: Bearer $(ADMIN_TOKEN)"
-```
-
-To reset the entire Keycloak database:
+This is expected and harmless — the script skips creating users that already exist. To reset:
 
 ```bash
-docker compose down kc-postgres keycloak
-docker volume rm chatbot-kc_postgres_data
-docker compose up -d kc-postgres keycloak
+# Remove Keycloak database and re-import
+docker compose down keycloak kc-seed
+docker volume rm chatbot-agent_kc_postgres_data
+docker compose up -d keycloak kc-seed
 ```
 
-The realm will be re-imported from `realm-export.json`.
+## Development Without Docker
+
+To run the API and frontend locally (for active development):
+
+```bash
+# Backend API (from backend/)
+uv sync
+uv run uvicorn app.main:app --port 8000
+
+# Frontend (from frontend/)
+npm install
+npm run dev
+
+# Keycloak and databases must still run in docker (or be set up separately)
+docker compose up -d postgres redis kc-postgres keycloak
+```
+
+Update `.env` for local hostnames:
+```
+DATABASE_URL=postgresql+asyncpg://chatbot:chatbot@localhost:5432/chatbot
+REDIS_URL=redis://localhost:6379/0
+KEYCLOAK_ISSUER=http://localhost:8080/realms/harness
+KEYCLOAK_JWKS_URL=http://localhost:8080/realms/harness/protocol/openid-connect/certs
+```

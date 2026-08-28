@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.agents.router import get_agent_router
 from app.apikeys.router import router as apikeys_router
 from app.core.config import get_settings
+from app.identity.router import router as identity_router
 from app.knowledge.router import router as knowledge_router
 from app.orgs.router import router as orgs_router
 

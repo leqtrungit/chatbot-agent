@@ -1,27 +1,15 @@
-import { clearAuthToken, getAuthHeader } from "@/lib/auth";
+import { clearAllTokens, getAccessToken } from "@/lib/auth";
 import type {
   Agent,
-  AnalyticsRange,
   ApiKey,
-  BreakdownBy,
-  BreakdownRow,
-  Citation,
   CreateAgentInput,
   CreateApiKeyInput,
   CreateApiKeyResponse,
-  CreateDomainInput,
-  CreateMcpServerInput,
+  CreateKnowledgeBaseInput,
   Document,
-  Domain,
-  Job,
-  McpServer,
-  SendChatMessageInput,
-  SendChatMessageResponse,
-  TimeseriesPoint,
   UpdateAgentInput,
-  UpdateDomainInput,
-  UpdateMcpServerInput,
-  UsageSummary,
+  UpdateKnowledgeBaseInput,
+  KnowledgeBase,
 } from "@/lib/types";
 
 export interface ChatStreamEvent {
@@ -33,17 +21,9 @@ export interface ChatStreamEvent {
   iterations?: number;
   stopped_on?: string;
   message?: string;
-  citations?: Citation[];
 }
 
-// Empty by default: requests go to /api/* on this origin, which next.config.ts
-// rewrites to the backend at runtime. Keeps the built bundle portable — nothing
-// about the deployment is compiled into it.
-//
-// Setting NEXT_PUBLIC_API_URL bypasses the proxy and calls the backend
-// cross-origin instead, which then needs that origin in the backend's
-// CORS_ORIGINS. It is baked in at build time like every NEXT_PUBLIC_* value, so
-// changing it requires a rebuild, not a restart.
+// API base URL: empty by default (uses proxy), or explicit cross-origin
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "";
 
 export class ApiError extends Error {
@@ -59,7 +39,7 @@ export class ApiError extends Error {
 
 function redirectToLogin() {
   if (typeof window !== "undefined") {
-    clearAuthToken();
+    clearAllTokens();
     window.location.href = "/login";
   }
 }
@@ -89,9 +69,9 @@ async function request<T>(
   const finalHeaders: Record<string, string> = { ...headers };
 
   if (auth) {
-    const authHeader = getAuthHeader();
-    if (authHeader) {
-      finalHeaders["Authorization"] = authHeader;
+    const token = await getAccessToken();
+    if (token) {
+      finalHeaders["Authorization"] = `Bearer ${token}`;
     }
   }
 
@@ -128,239 +108,145 @@ async function request<T>(
   return undefined as T;
 }
 
-// ---- Domains ----
+// ---- Knowledge Bases (formerly Domains) ----
 
-export function listDomains(): Promise<Domain[]> {
-  return request<Domain[]>("/api/domains");
+export function listKnowledgeBases(orgId: string): Promise<KnowledgeBase[]> {
+  return request<KnowledgeBase[]>(`/v2/orgs/${orgId}/knowledge-bases`);
 }
 
-export function createDomain(input: CreateDomainInput): Promise<Domain> {
-  return request<Domain>("/api/domains", {
+export function createKnowledgeBase(
+  orgId: string,
+  input: CreateKnowledgeBaseInput
+): Promise<KnowledgeBase> {
+  return request<KnowledgeBase>(`/v2/orgs/${orgId}/knowledge-bases`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(input),
   });
 }
 
-export function updateDomain(
-  id: string,
-  input: UpdateDomainInput
-): Promise<Domain> {
-  return request<Domain>(`/api/domains/${id}`, {
+export function updateKnowledgeBase(
+  orgId: string,
+  kbId: string,
+  input: UpdateKnowledgeBaseInput
+): Promise<KnowledgeBase> {
+  return request<KnowledgeBase>(`/v2/orgs/${orgId}/knowledge-bases/${kbId}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(input),
   });
 }
 
-export function deleteDomain(id: string): Promise<void> {
-  return request<void>(`/api/domains/${id}`, { method: "DELETE" });
-}
-
-export function getDomain(id: string): Promise<Domain> {
-  return request<Domain>(`/api/domains/${id}`);
-}
-
-export function setDomainAgents(id: string, agentIds: string[]): Promise<Domain> {
-  return request<Domain>(`/api/domains/${id}/agents`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ agent_ids: agentIds }),
+export function deleteKnowledgeBase(orgId: string, kbId: string): Promise<void> {
+  return request<void>(`/v2/orgs/${orgId}/knowledge-bases/${kbId}`, {
+    method: "DELETE",
   });
+}
+
+export function getKnowledgeBase(orgId: string, kbId: string): Promise<KnowledgeBase> {
+  return request<KnowledgeBase>(`/v2/orgs/${orgId}/knowledge-bases/${kbId}`);
 }
 
 // ---- Agents ----
 
-export function listAgents(): Promise<Agent[]> {
-  return request<Agent[]>("/api/agents");
+export function listAgents(orgId: string): Promise<Agent[]> {
+  return request<Agent[]>(`/v2/orgs/${orgId}/agents`);
 }
 
-export function getAgent(id: string): Promise<Agent> {
-  return request<Agent>(`/api/agents/${id}`);
+export function getAgent(orgId: string, agentId: string): Promise<Agent> {
+  return request<Agent>(`/v2/orgs/${orgId}/agents/${agentId}`);
 }
 
-export function createAgent(input: CreateAgentInput): Promise<Agent> {
-  return request<Agent>("/api/agents", {
+export function createAgent(
+  orgId: string,
+  input: CreateAgentInput
+): Promise<Agent> {
+  return request<Agent>(`/v2/orgs/${orgId}/agents`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(input),
   });
 }
 
-export function updateAgent(id: string, input: UpdateAgentInput): Promise<Agent> {
-  return request<Agent>(`/api/agents/${id}`, {
+export function updateAgent(
+  orgId: string,
+  agentId: string,
+  input: UpdateAgentInput
+): Promise<Agent> {
+  return request<Agent>(`/v2/orgs/${orgId}/agents/${agentId}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(input),
   });
 }
 
-export function deleteAgent(id: string): Promise<void> {
-  return request<void>(`/api/agents/${id}`, { method: "DELETE" });
-}
-
-// ---- MCP servers ----
-
-export function listMcpServers(): Promise<McpServer[]> {
-  return request<McpServer[]>("/api/mcp-servers");
-}
-
-export function createMcpServer(input: CreateMcpServerInput): Promise<McpServer> {
-  return request<McpServer>("/api/mcp-servers", {
+export function deactivateAgent(orgId: string, agentId: string): Promise<void> {
+  return request<void>(`/v2/orgs/${orgId}/agents/${agentId}/deactivate`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(input),
   });
-}
-
-export function updateMcpServer(id: string, input: UpdateMcpServerInput): Promise<McpServer> {
-  return request<McpServer>(`/api/mcp-servers/${id}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(input),
-  });
-}
-
-export function deleteMcpServer(id: string): Promise<void> {
-  return request<void>(`/api/mcp-servers/${id}`, { method: "DELETE" });
 }
 
 // ---- Documents ----
 
-export function listDocuments(domainId: string): Promise<Document[]> {
-  return request<Document[]>(`/api/domains/${domainId}/documents`);
+export function listDocuments(orgId: string, kbId: string): Promise<Document[]> {
+  return request<Document[]>(`/v2/orgs/${orgId}/knowledge-bases/${kbId}/documents`);
 }
 
 export function uploadDocument(
-  domainId: string,
+  orgId: string,
+  kbId: string,
   file: File
 ): Promise<Document> {
   const formData = new FormData();
   formData.append("file", file);
-  return request<Document>(`/api/domains/${domainId}/documents`, {
+  return request<Document>(`/v2/orgs/${orgId}/knowledge-bases/${kbId}/documents`, {
     method: "POST",
     body: formData,
   });
 }
 
-export function getDocument(id: string): Promise<Document> {
-  return request<Document>(`/api/documents/${id}`);
+export function getDocument(
+  orgId: string,
+  kbId: string,
+  docId: string
+): Promise<Document> {
+  return request<Document>(
+    `/v2/orgs/${orgId}/knowledge-bases/${kbId}/documents/${docId}`
+  );
 }
 
-export function deleteDocument(id: string): Promise<void> {
-  return request<void>(`/api/documents/${id}`, { method: "DELETE" });
+export function deleteDocument(
+  orgId: string,
+  kbId: string,
+  docId: string
+): Promise<void> {
+  return request<void>(
+    `/v2/orgs/${orgId}/knowledge-bases/${kbId}/documents/${docId}`,
+    { method: "DELETE" }
+  );
 }
 
-// ---- API keys ----
+// ---- API Keys ----
 
-export function listApiKeys(): Promise<ApiKey[]> {
-  return request<ApiKey[]>("/api/api-keys");
+export function listApiKeys(orgId: string): Promise<ApiKey[]> {
+  return request<ApiKey[]>(`/v2/orgs/${orgId}/api-keys`);
 }
 
 export function createApiKey(
+  orgId: string,
   input: CreateApiKeyInput
 ): Promise<CreateApiKeyResponse> {
-  return request<CreateApiKeyResponse>("/api/api-keys", {
+  return request<CreateApiKeyResponse>(`/v2/orgs/${orgId}/api-keys`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(input),
   });
 }
 
-export function revokeApiKey(id: string): Promise<ApiKey> {
-  return request<ApiKey>(`/api/api-keys/${id}/revoke`, { method: "POST" });
-}
-
-// ---- Analytics ----
-
-export function getUsageSummary(range: AnalyticsRange): Promise<UsageSummary> {
-  return request<UsageSummary>(`/api/analytics/summary?range=${range}`);
-}
-
-export function getTimeseries(range: AnalyticsRange): Promise<TimeseriesPoint[]> {
-  return request<TimeseriesPoint[]>(`/api/analytics/timeseries?range=${range}`);
-}
-
-export function getBreakdown(by: BreakdownBy, range: AnalyticsRange): Promise<BreakdownRow[]> {
-  return request<BreakdownRow[]>(`/api/analytics/breakdown?by=${by}&range=${range}`);
-}
-
-// ---- Webhook / Jobs (no admin auth — authenticated via X-API-Key) ----
-
-export function sendChatMessage(
-  input: SendChatMessageInput,
-  apiKey: string
-): Promise<SendChatMessageResponse> {
-  return request<SendChatMessageResponse>("/api/webhooks/generic", {
-    auth: false,
+export function revokeApiKey(orgId: string, keyId: string): Promise<ApiKey> {
+  return request<ApiKey>(`/v2/orgs/${orgId}/api-keys/${keyId}/revoke`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-API-Key": apiKey },
-    body: JSON.stringify(input),
   });
-}
-
-export function getJob(jobId: string, apiKey: string): Promise<Job> {
-  return request<Job>(`/api/jobs/${jobId}`, {
-    auth: false,
-    headers: { "X-API-Key": apiKey },
-  });
-}
-
-export async function streamChatMessage(
-  input: SendChatMessageInput,
-  apiKey: string,
-  onEvent: (event: ChatStreamEvent) => void,
-  signal?: AbortSignal
-): Promise<void> {
-  let response: Response;
-  try {
-    response = await fetch(`${API_BASE_URL}/api/chat/stream`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-API-Key": apiKey },
-      body: JSON.stringify(input),
-      signal,
-    });
-  } catch (err) {
-    if (err instanceof Error && err.name === "AbortError") {
-      throw new ApiError(0, "Request cancelled");
-    }
-    throw new ApiError(0, "Network error: could not reach the server");
-  }
-
-  if (!response.ok || !response.body) {
-    const detail = await parseErrorDetail(response);
-    throw new ApiError(response.status, detail);
-  }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-
-      let sep;
-      while ((sep = buffer.indexOf("\n\n")) !== -1) {
-        const frame = buffer.slice(0, sep);
-        buffer = buffer.slice(sep + 2);
-
-        const line = frame.split("\n").find((l) => l.startsWith("data:"));
-        if (!line) continue;
-
-        try {
-          onEvent(JSON.parse(line.slice(5).trim()) as ChatStreamEvent);
-        } catch (err) {
-          console.error("Failed to parse SSE frame:", err);
-        }
-      }
-    }
-  } finally {
-    reader.cancel();
-  }
 }
 
 export { API_BASE_URL };

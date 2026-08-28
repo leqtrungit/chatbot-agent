@@ -44,14 +44,14 @@ import {
 import {
   ApiError,
   createAgent,
-  deleteAgent,
+  deactivateAgent,
   listAgents,
-  listDomains,
-  listMcpServers,
+  listKnowledgeBases,
   updateAgent,
 } from "@/lib/api";
-import type { Agent, AgentProvider, Domain, McpServer } from "@/lib/types";
+import type { Agent, AgentProvider, KnowledgeBase } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { resolveOrgId } from "@/lib/org";
 
 interface AgentFormState {
   name: string;
@@ -65,8 +65,7 @@ interface AgentFormState {
   top_p: string;
   enable_knowledge_search: boolean;
   is_active: boolean;
-  domain_ids: string[];
-  mcp_server_ids: string[];
+  knowledge_base_ids: string[];
 }
 
 const PROVIDER_LABELS: Record<AgentProvider, string> = {
@@ -86,8 +85,7 @@ const EMPTY_FORM: AgentFormState = {
   top_p: "",
   enable_knowledge_search: true,
   is_active: true,
-  domain_ids: [],
-  mcp_server_ids: [],
+  knowledge_base_ids: [],
 };
 
 function agentToForm(agent: Agent): AgentFormState {
@@ -103,8 +101,7 @@ function agentToForm(agent: Agent): AgentFormState {
     top_p: agent.top_p != null ? String(agent.top_p) : "",
     enable_knowledge_search: agent.enable_knowledge_search,
     is_active: agent.is_active,
-    domain_ids: agent.domain_ids,
-    mcp_server_ids: agent.mcp_server_ids,
+    knowledge_base_ids: agent.knowledge_base_ids,
   };
 }
 
@@ -113,10 +110,11 @@ function toggleId(ids: string[], id: string): string[] {
 }
 
 export default function AgentsPage() {
+  const [orgId, setOrgId] = useState<string | null>(null);
   const [agents, setAgents] = useState<Agent[]>([]);
-  const [domains, setDomains] = useState<Domain[]>([]);
-  const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
+  const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   const [createOpen, setCreateOpen] = useState(false);
   const [createForm, setCreateForm] = useState<AgentFormState>(EMPTY_FORM);
@@ -129,31 +127,61 @@ export default function AgentsPage() {
   const [deleteTarget, setDeleteTarget] = useState<Agent | null>(null);
   const [deleting, setDeleting] = useState(false);
 
+  // Initialize org_id
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const resolved = await resolveOrgId();
+        if (!cancelled) {
+          if (!resolved) {
+            setError(
+              "Unable to resolve organization. Backend needs /v2/me endpoint or you need to set org_id manually."
+            );
+            setLoading(false);
+            return;
+          }
+          setOrgId(resolved);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(
+            err instanceof Error ? err.message : "Failed to initialize organization"
+          );
+          setLoading(false);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   async function refresh() {
+    if (!orgId) return;
     setLoading(true);
     try {
-      await loadAll();
+      await loadAll(orgId);
     } finally {
       setLoading(false);
     }
   }
 
-  async function loadAll(cancelledRef?: { current: boolean }) {
-    const [agentsResult, domainsResult, mcpResult] = await Promise.allSettled([
-      listAgents(),
-      listDomains(),
-      listMcpServers(),
+  async function loadAll(orgIdParam: string, cancelledRef?: { current: boolean }) {
+    const [agentsResult, kbsResult] = await Promise.allSettled([
+      listAgents(orgIdParam),
+      listKnowledgeBases(orgIdParam),
     ]);
     if (cancelledRef?.current) return;
 
     if (agentsResult.status === "fulfilled") setAgents(agentsResult.value);
-    if (domainsResult.status === "fulfilled") setDomains(domainsResult.value);
-    if (mcpResult.status === "fulfilled") setMcpServers(mcpResult.value);
+    if (kbsResult.status === "fulfilled") setKnowledgeBases(kbsResult.value);
 
     for (const [label, result] of [
       ["agents", agentsResult],
-      ["domains", domainsResult],
-      ["MCP servers", mcpResult],
+      ["knowledge bases", kbsResult],
     ] as const) {
       if (result.status === "rejected") {
         const err = result.reason;
@@ -165,11 +193,13 @@ export default function AgentsPage() {
   }
 
   useEffect(() => {
+    if (!orgId) return;
+
     const cancelledRef = { current: false };
     (async () => {
       setLoading(true);
       try {
-        await loadAll(cancelledRef);
+        await loadAll(orgId, cancelledRef);
       } finally {
         if (!cancelledRef.current) setLoading(false);
       }
@@ -177,7 +207,7 @@ export default function AgentsPage() {
     return () => {
       cancelledRef.current = true;
     };
-  }, []);
+  }, [orgId]);
 
   const sortedAgents = useMemo(
     () =>
@@ -187,9 +217,9 @@ export default function AgentsPage() {
     [agents]
   );
 
-  const domainNameById = useMemo(
-    () => new Map(domains.map((d) => [d.id, d.name])),
-    [domains]
+  const kbNameById = useMemo(
+    () => new Map(knowledgeBases.map((k) => [k.id, k.name])),
+    [knowledgeBases]
   );
 
   function parseOptionalFloat(value: string): number | undefined {
@@ -199,9 +229,10 @@ export default function AgentsPage() {
 
   async function handleCreate(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!orgId) return;
     setCreating(true);
     try {
-      await createAgent({
+      await createAgent(orgId, {
         name: createForm.name.trim(),
         provider: createForm.provider,
         base_url: createForm.base_url.trim() || undefined,
@@ -215,8 +246,7 @@ export default function AgentsPage() {
         top_p: parseOptionalFloat(createForm.top_p),
         enable_knowledge_search: createForm.enable_knowledge_search,
         is_active: createForm.is_active,
-        domain_ids: createForm.domain_ids,
-        mcp_server_ids: createForm.mcp_server_ids,
+        knowledge_base_ids: createForm.knowledge_base_ids,
       });
       toast.success("Agent created");
       setCreateOpen(false);
@@ -241,10 +271,10 @@ export default function AgentsPage() {
 
   async function handleEdit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!editTarget) return;
+    if (!editTarget || !orgId) return;
     setEditing(true);
     try {
-      await updateAgent(editTarget.id, {
+      await updateAgent(orgId, editTarget.id, {
         name: editForm.name.trim(),
         provider: editForm.provider,
         base_url: editForm.base_url.trim() || undefined,
@@ -256,8 +286,7 @@ export default function AgentsPage() {
         top_p: parseOptionalFloat(editForm.top_p),
         enable_knowledge_search: editForm.enable_knowledge_search,
         is_active: editForm.is_active,
-        domain_ids: editForm.domain_ids,
-        mcp_server_ids: editForm.mcp_server_ids,
+        knowledge_base_ids: editForm.knowledge_base_ids,
       });
       toast.success("Agent updated");
       setEditTarget(null);
@@ -275,16 +304,16 @@ export default function AgentsPage() {
   }
 
   async function handleDelete() {
-    if (!deleteTarget) return;
+    if (!deleteTarget || !orgId) return;
     setDeleting(true);
     try {
-      await deleteAgent(deleteTarget.id);
+      await deactivateAgent(orgId, deleteTarget.id);
       toast.success("Agent deactivated");
       setDeleteTarget(null);
       refresh();
     } catch (err) {
       if (err instanceof ApiError) {
-        toast.error("Failed to delete agent", { description: err.message });
+        toast.error("Failed to deactivate agent", { description: err.message });
       }
     } finally {
       setDeleting(false);
@@ -312,31 +341,31 @@ export default function AgentsPage() {
 
         <div className="flex flex-col gap-2 rounded-lg border p-3">
           <div className="flex items-center justify-between gap-2">
-            <Label className="text-sm font-medium">Serves these domains</Label>
-            {form.domain_ids.length > 0 ? (
+            <Label className="text-sm font-medium">Serves these knowledge bases</Label>
+            {form.knowledge_base_ids.length > 0 ? (
               <span className="text-xs text-muted-foreground">
-                {form.domain_ids.length} selected
+                {form.knowledge_base_ids.length} selected
               </span>
             ) : null}
           </div>
           <p className="text-xs text-muted-foreground">
-            Choose which domain(s) this agent should answer for.
+            Choose which knowledge base(s) this agent should answer for.
           </p>
-          {domains.length === 0 ? (
-            <p className="text-xs text-muted-foreground">No domains yet.</p>
+          {knowledgeBases.length === 0 ? (
+            <p className="text-xs text-muted-foreground">No knowledge bases yet.</p>
           ) : (
             <div className="flex max-h-48 flex-wrap gap-1.5 overflow-y-auto pt-1">
-              {domains.map((domain) => {
-                const selected = form.domain_ids.includes(domain.id);
+              {knowledgeBases.map((kb) => {
+                const selected = form.knowledge_base_ids.includes(kb.id);
                 return (
                   <button
-                    key={domain.id}
+                    key={kb.id}
                     type="button"
                     aria-pressed={selected}
                     onClick={() =>
                       setForm((f) => ({
                         ...f,
-                        domain_ids: toggleId(f.domain_ids, domain.id),
+                        knowledge_base_ids: toggleId(f.knowledge_base_ids, kb.id),
                       }))
                     }
                     className={cn(
@@ -347,7 +376,7 @@ export default function AgentsPage() {
                     )}
                   >
                     {selected ? <CheckIcon className="size-3" /> : null}
-                    {domain.name}
+                    {kb.name}
                   </button>
                 );
               })}
@@ -469,34 +498,20 @@ export default function AgentsPage() {
           />
           Active
         </label>
-
-        <div className="flex flex-col gap-2">
-          <Label>MCP servers</Label>
-          {mcpServers.length === 0 ? (
-            <p className="text-xs text-muted-foreground">
-              No MCP servers registered yet.
-            </p>
-          ) : (
-            <div className="flex max-h-32 flex-col gap-1 overflow-y-auto rounded-lg border p-2">
-              {mcpServers.map((server) => (
-                <label key={server.id} className="flex items-center gap-2 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={form.mcp_server_ids.includes(server.id)}
-                    onChange={() =>
-                      setForm((f) => ({
-                        ...f,
-                        mcp_server_ids: toggleId(f.mcp_server_ids, server.id),
-                      }))
-                    }
-                  />
-                  {server.name}
-                </label>
-              ))}
-            </div>
-          )}
-        </div>
       </>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="flex flex-col gap-6">
+        <div>
+          <h1 className="font-heading text-3xl tracking-tight">Agents</h1>
+        </div>
+        <div className="rounded-lg border border-destructive/20 bg-destructive/5 p-4 text-sm text-destructive">
+          {error}
+        </div>
+      </div>
     );
   }
 
@@ -506,10 +521,10 @@ export default function AgentsPage() {
         <div>
           <h1 className="font-heading text-3xl tracking-tight">Agents</h1>
           <p className="text-sm text-muted-foreground">
-            Configure providers, models, and tools, then assign agents to domains.
+            Configure providers, models, and tools, then assign agents to knowledge bases.
           </p>
         </div>
-        <Button onClick={() => setCreateOpen(true)}>
+        <Button onClick={() => setCreateOpen(true)} disabled={loading || !orgId}>
           <Plus />
           New agent
         </Button>
@@ -520,7 +535,7 @@ export default function AgentsPage() {
           <SheetHeader className="pr-8">
             <SheetTitle>New agent</SheetTitle>
             <SheetDescription>
-              Pick a provider and model, choose which tools it can use, and assign it to domains.
+              Pick a provider and model, choose which tools it can use, and assign it to knowledge bases.
             </SheetDescription>
           </SheetHeader>
           <form onSubmit={handleCreate} className="flex flex-1 flex-col gap-4 overflow-hidden">
@@ -543,7 +558,7 @@ export default function AgentsPage() {
             <TableRow>
               <TableHead>Name</TableHead>
               <TableHead>Provider / Model</TableHead>
-              <TableHead>Domains</TableHead>
+              <TableHead>Knowledge Bases</TableHead>
               <TableHead>Status</TableHead>
               <TableHead className="text-right">Actions</TableHead>
             </TableRow>
@@ -575,10 +590,10 @@ export default function AgentsPage() {
                     <span className="font-mono text-xs">{agent.provider}</span> / {agent.model_name}
                   </TableCell>
                   <TableCell className="max-w-xs truncate text-muted-foreground">
-                    {agent.domain_ids.length === 0
+                    {agent.knowledge_base_ids.length === 0
                       ? "—"
-                      : agent.domain_ids
-                          .map((id) => domainNameById.get(id) ?? id)
+                      : agent.knowledge_base_ids
+                          .map((id) => kbNameById.get(id) ?? id)
                           .join(", ")}
                   </TableCell>
                   <TableCell>
@@ -602,7 +617,7 @@ export default function AgentsPage() {
                       <Button
                         variant="ghost"
                         size="icon-sm"
-                        aria-label="Delete"
+                        aria-label="Deactivate"
                         onClick={() => setDeleteTarget(agent)}
                       >
                         <Trash2Icon />

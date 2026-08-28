@@ -36,6 +36,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { ApiError, createApiKey, listApiKeys, revokeApiKey } from "@/lib/api";
 import type { ApiKey } from "@/lib/types";
+import { resolveOrgId } from "@/lib/org";
 
 interface CreateFormState {
   name: string;
@@ -45,8 +46,10 @@ interface CreateFormState {
 const EMPTY_FORM: CreateFormState = { name: "", rateLimitPerMinute: "" };
 
 export default function ApiKeysPage() {
+  const [orgId, setOrgId] = useState<string | null>(null);
   const [apiKeys, setApiKeys] = useState<ApiKey[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   const [createOpen, setCreateOpen] = useState(false);
   const [createForm, setCreateForm] = useState<CreateFormState>(EMPTY_FORM);
@@ -56,10 +59,43 @@ export default function ApiKeysPage() {
   const [revokeTarget, setRevokeTarget] = useState<ApiKey | null>(null);
   const [revoking, setRevoking] = useState(false);
 
+  // Initialize org_id
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const resolved = await resolveOrgId();
+        if (!cancelled) {
+          if (!resolved) {
+            setError(
+              "Unable to resolve organization. Backend needs /v2/me endpoint or you need to set org_id manually."
+            );
+            setLoading(false);
+            return;
+          }
+          setOrgId(resolved);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(
+            err instanceof Error ? err.message : "Failed to initialize organization"
+          );
+          setLoading(false);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   async function refresh() {
+    if (!orgId) return;
     setLoading(true);
     try {
-      const data = await listApiKeys();
+      const data = await listApiKeys(orgId);
       setApiKeys(data);
     } catch (err) {
       if (err instanceof ApiError && err.status !== 401) {
@@ -71,11 +107,13 @@ export default function ApiKeysPage() {
   }
 
   useEffect(() => {
+    if (!orgId) return;
+
     let cancelled = false;
     (async () => {
       setLoading(true);
       try {
-        const data = await listApiKeys();
+        const data = await listApiKeys(orgId);
         if (!cancelled) setApiKeys(data);
       } catch (err) {
         if (!cancelled && err instanceof ApiError && err.status !== 401) {
@@ -88,7 +126,7 @@ export default function ApiKeysPage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [orgId]);
 
   const sortedKeys = useMemo(
     () =>
@@ -108,10 +146,11 @@ export default function ApiKeysPage() {
 
   async function handleCreate(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!orgId) return;
     setCreating(true);
     try {
       const rateLimit = createForm.rateLimitPerMinute.trim();
-      const response = await createApiKey({
+      const response = await createApiKey(orgId, {
         name: createForm.name.trim(),
         rate_limit_per_minute: rateLimit ? Number(rateLimit) : undefined,
       });
@@ -137,10 +176,10 @@ export default function ApiKeysPage() {
   }
 
   async function handleRevoke() {
-    if (!revokeTarget) return;
+    if (!revokeTarget || !orgId) return;
     setRevoking(true);
     try {
-      await revokeApiKey(revokeTarget.id);
+      await revokeApiKey(orgId, revokeTarget.id);
       toast.success("API key revoked");
       setRevokeTarget(null);
       refresh();
@@ -151,6 +190,19 @@ export default function ApiKeysPage() {
     } finally {
       setRevoking(false);
     }
+  }
+
+  if (error) {
+    return (
+      <div className="flex flex-col gap-6">
+        <div>
+          <h1 className="font-heading text-3xl tracking-tight">API Keys</h1>
+        </div>
+        <div className="rounded-lg border border-destructive/20 bg-destructive/5 p-4 text-sm text-destructive">
+          {error}
+        </div>
+      </div>
+    );
   }
 
   return (

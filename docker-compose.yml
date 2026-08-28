@@ -1,3 +1,18 @@
+x-backend-env: &backend-env
+  DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-chatbot}:${POSTGRES_PASSWORD:-chatbot}@postgres:5432/${POSTGRES_DB:-chatbot}
+  REDIS_URL: redis://redis:6379/0
+  EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-ollama}
+  EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-}
+  EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+  EMBEDDING_MODEL: ${EMBEDDING_MODEL:-nomic-embed-text}
+  EMBEDDING_DIM: ${EMBEDDING_DIM:-768}
+  CHAT_HISTORY_LIMIT: ${CHAT_HISTORY_LIMIT:-20}
+  MAX_CLIENT_HISTORY_MESSAGES: ${MAX_CLIENT_HISTORY_MESSAGES:-200}
+  KEYCLOAK_ISSUER: http://localhost:8080/realms/harness
+  KEYCLOAK_JWKS_URL: http://keycloak:8080/realms/harness/protocol/openid-connect/certs
+  KEYCLOAK_AUDIENCE: backend
+  KEYCLOAK_BASE_URL: http://keycloak:8080
+
 services:
   postgres:
     image: pgvector/pgvector:pg17
@@ -63,6 +78,8 @@ services:
       KC_DB_URL: jdbc:postgresql://kc-postgres:5432/keycloak
       KC_DB_USERNAME: ${KEYCLOAK_DB_USERNAME:-keycloak}
       KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:-keycloak}
+      # Set hostname so token iss claim matches browser origin (localhost:8080)
+      KC_HOSTNAME: http://localhost:8080
     ports:
       - "8080:8080"
     volumes:
@@ -71,6 +88,64 @@ services:
     depends_on:
       kc-postgres:
         condition: service_healthy
+
+  # One-shot: migrate database schema before API/worker start
+  migrate:
+    build: ./backend
+    command: alembic upgrade head
+    restart: "no"
+    environment: *backend-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Backend API server
+  api:
+    build: ./backend
+    restart: unless-stopped
+    ports:
+      - "0.0.0.0:8000:8000"
+    environment:
+      <<: *backend-env
+      CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  # Frontend admin UI
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    ports:
+      - "0.0.0.0:3000:3000"
+    depends_on:
+      api:
+        condition: service_started
+
+  # One-shot: seed Keycloak with initial users and create demo organization
+  kc-seed:
+    image: alpine/curl:latest
+    restart: "no"
+    depends_on:
+      keycloak:
+        condition: service_started
+      api:
+        condition: service_started
+    environment:
+      KEYCLOAK_URL: http://keycloak:8080
+      API_URL: http://api:8000
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        apk add --no-cache jq bash
+        /bin/bash /seed/seed.sh
+    volumes:
+      - ./infra/keycloak/seed.sh:/seed/seed.sh:ro
 
 volumes:
   postgres_data:

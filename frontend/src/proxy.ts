@@ -1,27 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
 
-const AUTH_COOKIE_NAME = "admin_auth";
-
 export function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
-  const hasAuth = Boolean(request.cookies.get(AUTH_COOKIE_NAME)?.value);
 
-  if (pathname === "/login") {
+  // Allow login page
+  if (pathname === "/login" || pathname === "/callback") {
     return NextResponse.next();
   }
 
-  if (!hasAuth) {
-    const loginUrl = new URL("/login", request.url);
-    return NextResponse.redirect(loginUrl);
-  }
-
+  // Redirect home to domains
   if (pathname === "/") {
     return NextResponse.redirect(new URL("/domains", request.url));
   }
 
+  // All other admin routes are protected client-side (token is in localStorage)
   return NextResponse.next();
 }
 
 export const config = {
-  matcher: ["/", "/domains/:path*", "/api-keys/:path*", "/login"],
+  matcher: ["/", "/domains/:path*", "/agents/:path*", "/api-keys/:path*", "/login", "/callback"],
 };

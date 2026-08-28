@@ -106,6 +106,43 @@
         "configure": true,
         "manage": true
       }
+    },
+    {
+      "clientId": "seed-cli",
+      "name": "Seed CLI",
+      "description": "Development-only client for seed script and local testing (password grant enabled)",
+      "enabled": true,
+      "publicClient": true,
+      "frontchannelLogout": false,
+      "protocol": "openid-connect",
+      "attributes": {},
+      "authenticationFlowBindingOverrides": {},
+      "redirectUris": [],
+      "webOrigins": [],
+      "notBefore": 0,
+      "bearerOnly": false,
+      "consentRequired": false,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "authorizationServicesEnabled": false,
+      "defaultClientScopes": [
+        "profile",
+        "email",
+        "roles",
+        "audience"
+      ],
+      "optionalClientScopes": [
+        "address",
+        "phone"
+      ],
+      "protocolMappers": [],
+      "access": {
+        "view": true,
+        "configure": true,
+        "manage": true
+      }
     }
   ],
   "clientScopeMappings": {},
