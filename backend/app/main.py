@@ -33,6 +33,7 @@ def create_app() -> FastAPI:
         return {"status": "ok"}
 
     # Mount routers — the single mounting point for every module
+    app.include_router(identity_router)
     app.include_router(orgs_router)
     app.include_router(apikeys_router)
     app.include_router(get_agent_router())

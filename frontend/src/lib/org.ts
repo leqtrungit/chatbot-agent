@@ -1,6 +1,20 @@
-import { getAccessToken, getUserOrganization, isOperator } from "@/lib/auth";
+import { getAccessToken } from "@/lib/auth";
 
-const ORG_ID_KEY = "resolved_org_id";
+/**
+ * User identity info from GET /v2/me endpoint
+ */
+export interface UserIdentity {
+  kind: "operator" | "tenant";
+  user_id: string;
+  email?: string;
+  role?: "admin" | "owner"; // Only for tenants
+  org?: {
+    id: string;
+    name: string;
+    slug: string;
+    status: string;
+  };
+}
 
 /**
  * Organization info needed for tenant endpoints
@@ -10,79 +24,106 @@ export interface OrgContext {
   org_alias: string;
 }
 
+// Cache for user identity
+let _cachedIdentity: UserIdentity | null = null;
+let _identityFetchPromise: Promise<UserIdentity | null> | null = null;
+
 /**
- * Resolve org_id from backend using operator endpoint
- * LIMITATION: Backend does not yet provide a /v2/me endpoint for tenants to resolve their own org.
- * Currently this only works for operators who can list all orgs.
- * For regular tenants, we store org_id in localStorage as a workaround.
+ * Fetch user identity from GET /v2/me endpoint
  */
-export async function resolveOrgId(): Promise<string | null> {
-  // Check localStorage cache first
-  const cached = typeof localStorage !== "undefined" ? localStorage.getItem(ORG_ID_KEY) : null;
-  if (cached) return cached;
+async function fetchUserIdentity(): Promise<UserIdentity | null> {
+  // Avoid concurrent fetch calls
+  if (_identityFetchPromise) {
+    return _identityFetchPromise;
+  }
 
-  const orgAlias = getUserOrganization();
-  if (!orgAlias) return null;
-
-  // Try to resolve via operator endpoint (only works for operators)
-  if (isOperator()) {
+  _identityFetchPromise = (async () => {
     try {
       const token = await getAccessToken();
       if (!token) return null;
 
-      const response = await fetch(
-        new URL(`${process.env.NEXT_PUBLIC_API_URL || ""}/v2/operator/orgs`),
-        {
-          headers: { Authorization: `Bearer ${token}` },
-        }
-      );
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "";
+      const response = await fetch(`${apiUrl}/v2/me`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
 
-      if (response.ok) {
-        interface OrgResponse {
-          id: string;
-          alias: string;
-        }
-        const orgs = (await response.json()) as OrgResponse[];
-        const org = orgs.find((o) => o.alias === orgAlias);
-        if (org) {
-          if (typeof localStorage !== "undefined") {
-            localStorage.setItem(ORG_ID_KEY, org.id);
-          }
-          return org.id;
-        }
+      if (!response.ok) {
+        return null;
       }
+
+      const identity = (await response.json()) as UserIdentity;
+      _cachedIdentity = identity;
+      return identity;
     } catch {
-      // Fall through to localStorage fallback
+      return null;
+    } finally {
+      _identityFetchPromise = null;
     }
-  }
+  })();
 
-  // For non-operators: LIMITATION - backend needs /v2/me endpoint
-  // For now, return null and let UI handle the error/workaround
-  return null;
+  return _identityFetchPromise;
 }
 
 /**
- * Clear cached org_id (e.g., on logout)
+ * Get cached user identity if available (without fetching)
  */
-export function clearOrgCache(): void {
-  if (typeof localStorage !== "undefined") {
-    localStorage.removeItem(ORG_ID_KEY);
-  }
+export function getCachedIdentity(): UserIdentity | null {
+  return _cachedIdentity;
 }
 
 /**
- * Manually set org_id (temporary workaround for tenants until backend provides /v2/me)
+ * Get user identity, fetching from /v2/me if not cached
  */
-export function setOrgId(orgId: string): void {
-  if (typeof localStorage !== "undefined") {
-    localStorage.setItem(ORG_ID_KEY, orgId);
+export async function getUserIdentity(): Promise<UserIdentity | null> {
+  if (_cachedIdentity) {
+    return _cachedIdentity;
   }
+  return fetchUserIdentity();
 }
 
 /**
- * Get cached org_id
+ * Resolve org_id for tenant users
+ * Returns null if user is operator or org not found
  */
-export function getCachedOrgId(): string | null {
-  if (typeof localStorage === "undefined") return null;
-  return localStorage.getItem(ORG_ID_KEY);
+export async function resolveOrgId(): Promise<string | null> {
+  const identity = await getUserIdentity();
+  if (!identity || identity.kind !== "tenant" || !identity.org) {
+    return null;
+  }
+  return identity.org.id;
+}
+
+/**
+ * Check if current user is an operator
+ */
+export async function isOperator(): Promise<boolean> {
+  const identity = await getUserIdentity();
+  return identity ? identity.kind === "operator" : false;
+}
+
+/**
+ * Check if current user is a tenant
+ */
+export async function isTenant(): Promise<boolean> {
+  const identity = await getUserIdentity();
+  return identity ? identity.kind === "tenant" : false;
+}
+
+/**
+ * Clear cached identity (e.g., on logout)
+ */
+export function clearIdentityCache(): void {
+  _cachedIdentity = null;
+  _identityFetchPromise = null;
+}
+
+/**
+ * Get operator message for users without tenant access
+ */
+export function getOperatorMessage(): string {
+  return (
+    "You are currently logged in with operator privileges. " +
+    "The organization management pages are only available to organization members. " +
+    "Please log in with a tenant account to access agent and knowledge base management."
+  );
 }

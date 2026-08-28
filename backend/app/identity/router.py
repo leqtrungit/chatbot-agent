@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Literal
-
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_session
@@ -14,12 +13,6 @@ from app.orgs.models import Organization
 
 
 router = APIRouter(prefix="/v2", tags=["identity"])
-
-
-class MeResponse:
-    """Response model for GET /v2/me endpoint."""
-
-    pass
 
 
 def _build_me_response(
@@ -78,9 +71,9 @@ async def get_me(
 
     # Tenant principal - need to resolve org from database
     if isinstance(principal, TenantPrincipal):
-        org = await session.query(Organization).filter(
-            Organization.slug == principal.org_alias
-        ).first()
+        stmt = select(Organization).where(Organization.slug == principal.org_alias)
+        result = await session.execute(stmt)
+        org = result.scalar_one_or_none()
 
         if org is None:
             raise HTTPException(

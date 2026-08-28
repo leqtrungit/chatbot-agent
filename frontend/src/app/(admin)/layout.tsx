@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useSyncExternalStore } from "react";
@@ -13,6 +13,8 @@ import {
   MoonIcon,
   SunIcon,
   User,
+  AlertCircleIcon,
+  X,
 } from "lucide-react";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -28,6 +30,7 @@ import { logout, isLoggedIn } from "@/lib/auth";
 import { cn } from "@/lib/utils";
 import { EmberMark } from "@/components/ember-mark";
 import { parseToken } from "@/lib/auth";
+import { isOperator, getOperatorMessage } from "@/lib/org";
 
 const NAV_ITEMS = [
   { href: "/domains", label: "Knowledge Bases", icon: FolderKanban },
@@ -87,6 +90,7 @@ export default function AdminLayout({
   const pathname = usePathname();
   const router = useRouter();
   const mounted = useMounted();
+  const [showOperatorBanner, setShowOperatorBanner] = useState(false);
 
   useEffect(() => {
     if (!mounted) return;
@@ -96,6 +100,16 @@ export default function AdminLayout({
       router.replace("/login");
     }
   }, [mounted, router]);
+
+  useEffect(() => {
+    if (!mounted || !isLoggedIn()) return;
+
+    // Check if user is operator
+    (async () => {
+      const isOperatorUser = await isOperator();
+      setShowOperatorBanner(isOperatorUser);
+    })();
+  }, [mounted]);
 
   if (!mounted || !isLoggedIn()) {
     return null; // Prevent hydration mismatch and protect route
@@ -157,6 +171,22 @@ export default function AdminLayout({
         </aside>
 
         <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col px-6 py-8">
+          {showOperatorBanner && (
+            <div className="mb-6 flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 p-4 text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-50">
+              <AlertCircleIcon className="mt-0.5 size-5 shrink-0" />
+              <div className="flex-1">
+                <p className="font-medium">Operator Access</p>
+                <p className="mt-1 text-sm">{getOperatorMessage()}</p>
+              </div>
+              <button
+                onClick={() => setShowOperatorBanner(false)}
+                className="shrink-0 text-amber-900 hover:text-amber-700 dark:text-amber-50 dark:hover:text-amber-200"
+                aria-label="Dismiss message"
+              >
+                <X className="size-4" />
+              </button>
+            </div>
+          )}
           {children}
         </main>
 

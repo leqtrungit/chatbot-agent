@@ -2,17 +2,18 @@
 
 from __future__ import annotations
 
-import json
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any
+from unittest.mock import patch
 
 import pytest
-import jwt
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import Settings
 from app.core.db import get_session
 from app.core.security import JWKSVerifier, TenantPrincipal, OperatorPrincipal
 from app.identity.deps import get_jwks_verifier
@@ -26,27 +27,29 @@ class _FakeSession:
     def __init__(self, orgs: dict[str, Organization]):
         self._orgs = orgs  # keyed by slug
 
-    async def get(self, model, key):
-        """Mock get method - not used in /v2/me logic."""
-        if model is Organization:
-            for org in self._orgs.values():
-                if org.id == key:
-                    return org
-        return None
-
     async def execute(self, stmt):
         """Mock execute for query statements."""
-        # This would be used for actual queries, but for /v2/me we'll use a simpler approach
+        # Handle SELECT Organization queries
+        if hasattr(stmt, 'froms') and Organization in stmt.froms:
+            # Very basic query simulation - check for slug filter
+            if hasattr(stmt, 'whereclause') and stmt.whereclause is not None:
+                # For now, return None - tests will override as needed
+                pass
+
         class FakeResult:
+            def __init__(self, org: Organization | None = None):
+                self._org = org
+
             def scalar_one_or_none(self):
-                return None
+                return self._org
 
         return FakeResult()
 
 
 def _make_app(
-    organizations: dict[str, Organization],
     verifier: JWKSVerifier,
+    test_issuer: str = "http://localhost:8080/realms/harness",
+    test_audience: str = "backend",
 ) -> FastAPI:
     """Create test FastAPI app with mocked dependencies."""
     app = FastAPI()
@@ -54,69 +57,70 @@ def _make_app(
     # Include the identity router
     app.include_router(identity_router)
 
-    # Override dependencies
-    app.dependency_overrides[get_session] = lambda: _FakeSession(organizations)
-    app.dependency_overrides[get_jwks_verifier] = lambda request: verifier
+    # Store JWKSVerifier in app state
+    app.state.jwks_verifier = verifier
 
     return app
 
 
-def _make_org(org_id: uuid.UUID, name: str, slug: str, status: str = "active") -> Organization:
-    """Create an Organization model for testing."""
-    return Organization(
-        id=org_id,
-        name=name,
-        slug=slug,
-        keycloak_org_id=None,
-        status=status,
-        created_at=datetime.now(timezone.utc),
-        updated_at=datetime.now(timezone.utc),
-    )
-
-
-async def _get_with_token(app: FastAPI, token: str) -> Any:
-    """Make GET request to /v2/me with token."""
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        return await client.get("/v2/me", headers={"Authorization": f"Bearer {token}"})
-
-
+@pytest.mark.asyncio
 class TestMeEndpointNoDatabase:
     """Tests for /v2/me endpoint that don't require database."""
 
-    def test_missing_authorization_header_returns_401(
+    async def test_missing_authorization_header_returns_401(
         self,
         jwks_dict: dict[str, Any],
+        test_issuer: str,
+        test_audience: str,
     ) -> None:
         """Missing Authorization header returns 401."""
         verifier = JWKSVerifier(jwks_dict=jwks_dict)
-        app = _make_app({}, verifier)
+        app = _make_app(verifier, test_issuer, test_audience)
 
-        with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            response = client.get("/v2/me")
-            assert response.status_code == 401
-            assert "Authorization header" in response.json()["detail"]
+        with patch("app.identity.deps.get_settings") as mock_settings:
+            settings = Settings(
+                keycloak_issuer=test_issuer,
+                keycloak_audience=test_audience,
+            )
+            mock_settings.return_value = settings
 
-    def test_invalid_bearer_format_returns_401(
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                response = await client.get("/v2/me")
+                assert response.status_code == 401
+                assert "Authorization header" in response.json()["detail"]
+
+    async def test_invalid_bearer_format_returns_401(
         self,
         jwks_dict: dict[str, Any],
+        test_issuer: str,
+        test_audience: str,
     ) -> None:
         """Invalid Authorization format returns 401."""
         verifier = JWKSVerifier(jwks_dict=jwks_dict)
-        app = _make_app({}, verifier)
+        app = _make_app(verifier, test_issuer, test_audience)
 
-        with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            response = client.get("/v2/me", headers={"Authorization": "InvalidFormat"})
-            assert response.status_code == 401
-            assert "Invalid Authorization header format" in response.json()["detail"]
+        with patch("app.identity.deps.get_settings") as mock_settings:
+            settings = Settings(
+                keycloak_issuer=test_issuer,
+                keycloak_audience=test_audience,
+            )
+            mock_settings.return_value = settings
 
-    def test_invalid_token_signature_returns_401(
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                response = await client.get("/v2/me", headers={"Authorization": "InvalidFormat"})
+                assert response.status_code == 401
+                assert "Invalid Authorization header format" in response.json()["detail"]
+
+    async def test_invalid_token_signature_returns_401(
         self,
         jwks_dict: dict[str, Any],
         make_token,
+        test_issuer: str,
+        test_audience: str,
     ) -> None:
         """Invalid token signature returns 401."""
         verifier = JWKSVerifier(jwks_dict=jwks_dict)
-        app = _make_app({}, verifier)
+        app = _make_app(verifier, test_issuer, test_audience)
 
         # Create token with wrong key
         invalid_token = make_token(
@@ -124,27 +128,36 @@ class TestMeEndpointNoDatabase:
                 "sub": "user1",
                 "email": "user@example.com",
                 "organization": "acme",
-                "iss": "http://localhost:8080/realms/harness",
-                "aud": "backend",
+                "iss": test_issuer,
+                "aud": test_audience,
             },
             wrong_key=True,
         )
 
-        with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            response = client.get(
-                "/v2/me",
-                headers={"Authorization": f"Bearer {invalid_token}"},
+        with patch("app.identity.deps.get_settings") as mock_settings:
+            settings = Settings(
+                keycloak_issuer=test_issuer,
+                keycloak_audience=test_audience,
             )
-            assert response.status_code == 401
+            mock_settings.return_value = settings
 
-    def test_expired_token_returns_401(
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                response = await client.get(
+                    "/v2/me",
+                    headers={"Authorization": f"Bearer {invalid_token}"},
+                )
+                assert response.status_code == 401
+
+    async def test_expired_token_returns_401(
         self,
         jwks_dict: dict[str, Any],
         make_token,
+        test_issuer: str,
+        test_audience: str,
     ) -> None:
         """Expired token returns 401."""
         verifier = JWKSVerifier(jwks_dict=jwks_dict)
-        app = _make_app({}, verifier)
+        app = _make_app(verifier, test_issuer, test_audience)
 
         # Create expired token
         expired_token = make_token(
@@ -152,20 +165,27 @@ class TestMeEndpointNoDatabase:
                 "sub": "user1",
                 "email": "user@example.com",
                 "organization": "acme",
-                "iss": "http://localhost:8080/realms/harness",
-                "aud": "backend",
+                "iss": test_issuer,
+                "aud": test_audience,
             },
             expired=True,
         )
 
-        with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            response = client.get(
-                "/v2/me",
-                headers={"Authorization": f"Bearer {expired_token}"},
+        with patch("app.identity.deps.get_settings") as mock_settings:
+            settings = Settings(
+                keycloak_issuer=test_issuer,
+                keycloak_audience=test_audience,
             )
-            assert response.status_code == 401
+            mock_settings.return_value = settings
 
-    def test_operator_principal_returns_200_with_correct_shape(
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                response = await client.get(
+                    "/v2/me",
+                    headers={"Authorization": f"Bearer {expired_token}"},
+                )
+                assert response.status_code == 401
+
+    async def test_operator_principal_returns_200_with_correct_shape(
         self,
         jwks_dict: dict[str, Any],
         make_token,
@@ -174,7 +194,7 @@ class TestMeEndpointNoDatabase:
     ) -> None:
         """Operator principal returns 200 with correct response shape."""
         verifier = JWKSVerifier(jwks_dict=jwks_dict)
-        app = _make_app({}, verifier)
+        app = _make_app(verifier, test_issuer, test_audience)
 
         # Create token with operator role
         token = make_token(
@@ -187,53 +207,28 @@ class TestMeEndpointNoDatabase:
             }
         )
 
-        response = AsyncClient(
-            transport=ASGITransport(app=app),
-            base_url="http://test",
-        ).get(
-            "/v2/me",
-            headers={"Authorization": f"Bearer {token}"},
-        )
+        with patch("app.identity.deps.get_settings") as mock_settings:
+            settings = Settings(
+                keycloak_issuer=test_issuer,
+                keycloak_audience=test_audience,
+            )
+            mock_settings.return_value = settings
 
-        assert response.status_code == 200
-        data = response.json()
-        assert data["kind"] == "operator"
-        assert data["user_id"] == "operator-user-1"
-        assert data["email"] == "operator@example.com"
-        assert data["org"] is None
+            async with AsyncClient(
+                transport=ASGITransport(app=app),
+                base_url="http://test",
+            ) as client:
+                response = await client.get(
+                    "/v2/me",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
 
-    def test_tenant_without_org_in_db_returns_404(
-        self,
-        jwks_dict: dict[str, Any],
-        make_token,
-        test_issuer: str,
-        test_audience: str,
-    ) -> None:
-        """Tenant with org alias not in database returns 404."""
-        verifier = JWKSVerifier(jwks_dict=jwks_dict)
-        # Empty organizations dict
-        app = _make_app({}, verifier)
-
-        # Create tenant token with org alias "acme" that doesn't exist in DB
-        token = make_token(
-            {
-                "sub": "tenant-user-1",
-                "email": "tenant@example.com",
-                "organization": "acme",
-                "iss": test_issuer,
-                "aud": test_audience,
-            }
-        )
-
-        response = AsyncClient(
-            transport=ASGITransport(app=app),
-            base_url="http://test",
-        ).get(
-            "/v2/me",
-            headers={"Authorization": f"Bearer {token}"},
-        )
-
-        assert response.status_code == 404
+                assert response.status_code == 200
+                data = response.json()
+                assert data["kind"] == "operator"
+                assert data["user_id"] == "operator-user-1"
+                assert data["email"] == "operator@example.com"
+                assert data["org"] is None
 
 
 @pytest.mark.asyncio
@@ -251,17 +246,20 @@ class TestMeEndpointWithDatabase:
         """Tenant with org in DB returns 200 with org data."""
         # Create organization in database
         org_id = uuid.uuid4()
-        org = _make_org(org_id, "Acme Corp", "acme", status="active")
+        org = Organization(
+            id=org_id,
+            name="Acme Corp",
+            slug="acme",
+            keycloak_org_id=None,
+            status="active",
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
         session.add(org)
         await session.commit()
 
         verifier = JWKSVerifier(jwks_dict=jwks_dict)
-
-        # Create app with real database session
-        app = FastAPI()
-        app.include_router(identity_router)
-        app.dependency_overrides[get_jwks_verifier] = lambda request: verifier
-        # Don't override get_session, use the real one
+        app = _make_app(verifier, test_issuer, test_audience)
 
         # Create tenant token
         token = make_token(
@@ -274,21 +272,28 @@ class TestMeEndpointWithDatabase:
             }
         )
 
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            response = await client.get(
-                "/v2/me",
-                headers={"Authorization": f"Bearer {token}"},
+        with patch("app.identity.deps.get_settings") as mock_settings:
+            settings = Settings(
+                keycloak_issuer=test_issuer,
+                keycloak_audience=test_audience,
             )
+            mock_settings.return_value = settings
 
-        assert response.status_code == 200
-        data = response.json()
-        assert data["kind"] == "tenant"
-        assert data["user_id"] == "tenant-user-1"
-        assert data["email"] == "tenant@example.com"
-        assert data["org"]["id"] == str(org_id)
-        assert data["org"]["name"] == "Acme Corp"
-        assert data["org"]["slug"] == "acme"
-        assert data["org"]["status"] == "active"
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                response = await client.get(
+                    "/v2/me",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+
+            assert response.status_code == 200
+            data = response.json()
+            assert data["kind"] == "tenant"
+            assert data["user_id"] == "tenant-user-1"
+            assert data["email"] == "tenant@example.com"
+            assert data["org"]["id"] == str(org_id)
+            assert data["org"]["name"] == "Acme Corp"
+            assert data["org"]["slug"] == "acme"
+            assert data["org"]["status"] == "active"
 
     async def test_tenant_with_suspended_org_returns_403(
         self,
@@ -301,16 +306,20 @@ class TestMeEndpointWithDatabase:
         """Tenant with suspended org returns 403."""
         # Create suspended organization
         org_id = uuid.uuid4()
-        org = _make_org(org_id, "Suspended Corp", "suspended-org", status="suspended")
+        org = Organization(
+            id=org_id,
+            name="Suspended Corp",
+            slug="suspended-org",
+            keycloak_org_id=None,
+            status="suspended",
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
         session.add(org)
         await session.commit()
 
         verifier = JWKSVerifier(jwks_dict=jwks_dict)
-
-        # Create app with real database
-        app = FastAPI()
-        app.include_router(identity_router)
-        app.dependency_overrides[get_jwks_verifier] = lambda request: verifier
+        app = _make_app(verifier, test_issuer, test_audience)
 
         # Create tenant token for suspended org
         token = make_token(
@@ -323,14 +332,60 @@ class TestMeEndpointWithDatabase:
             }
         )
 
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            response = await client.get(
-                "/v2/me",
-                headers={"Authorization": f"Bearer {token}"},
+        with patch("app.identity.deps.get_settings") as mock_settings:
+            settings = Settings(
+                keycloak_issuer=test_issuer,
+                keycloak_audience=test_audience,
             )
+            mock_settings.return_value = settings
 
-        assert response.status_code == 403
-        assert "suspended" in response.json()["detail"].lower()
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                response = await client.get(
+                    "/v2/me",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+
+            assert response.status_code == 403
+            assert "suspended" in response.json()["detail"].lower()
+
+    async def test_tenant_without_org_in_db_returns_404(
+        self,
+        session: AsyncSession,
+        jwks_dict: dict[str, Any],
+        make_token,
+        test_issuer: str,
+        test_audience: str,
+    ) -> None:
+        """Tenant with org alias not in database returns 404."""
+        # Don't create any organizations - test empty DB
+        verifier = JWKSVerifier(jwks_dict=jwks_dict)
+        app = _make_app(verifier, test_issuer, test_audience)
+
+        # Create tenant token with org alias "acme" that doesn't exist in DB
+        token = make_token(
+            {
+                "sub": "tenant-user-1",
+                "email": "tenant@example.com",
+                "organization": "acme",
+                "iss": test_issuer,
+                "aud": test_audience,
+            }
+        )
+
+        with patch("app.identity.deps.get_settings") as mock_settings:
+            settings = Settings(
+                keycloak_issuer=test_issuer,
+                keycloak_audience=test_audience,
+            )
+            mock_settings.return_value = settings
+
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                response = await client.get(
+                    "/v2/me",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+
+            assert response.status_code == 404
 
     async def test_tenant_with_mismatched_org_alias_returns_404(
         self,
@@ -343,15 +398,20 @@ class TestMeEndpointWithDatabase:
         """Token org alias doesn't match any DB org returns 404."""
         # Create organization
         org_id = uuid.uuid4()
-        org = _make_org(org_id, "Acme Corp", "acme", status="active")
+        org = Organization(
+            id=org_id,
+            name="Acme Corp",
+            slug="acme",
+            keycloak_org_id=None,
+            status="active",
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
         session.add(org)
         await session.commit()
 
         verifier = JWKSVerifier(jwks_dict=jwks_dict)
-
-        app = FastAPI()
-        app.include_router(identity_router)
-        app.dependency_overrides[get_jwks_verifier] = lambda request: verifier
+        app = _make_app(verifier, test_issuer, test_audience)
 
         # Create token with different org alias
         token = make_token(
@@ -364,10 +424,17 @@ class TestMeEndpointWithDatabase:
             }
         )
 
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            response = await client.get(
-                "/v2/me",
-                headers={"Authorization": f"Bearer {token}"},
+        with patch("app.identity.deps.get_settings") as mock_settings:
+            settings = Settings(
+                keycloak_issuer=test_issuer,
+                keycloak_audience=test_audience,
             )
+            mock_settings.return_value = settings
 
-        assert response.status_code == 404
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                response = await client.get(
+                    "/v2/me",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+
+            assert response.status_code == 404
