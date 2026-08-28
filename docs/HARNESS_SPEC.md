@@ -135,6 +135,7 @@ Ký hiệu độ ưu tiên: **[M]** must-have của v2 — thiếu là chưa xon
 - **FR-T3 [M]** Role tối thiểu map từ Keycloak: `owner` (quản lý member + mọi quyền admin), `admin` (mọi quyền trừ quản lý member). Backend đọc role/org từ token claim; **authz theo resource (org-scoping) vẫn nằm ở backend ta**, Keycloak chỉ trả lời "ai, thuộc org nào, role gì".
 - **FR-T4 [M]** API key: tạo/thu hồi theo org; hiển thị đúng một lần lúc tạo; lưu dạng hash.
 - **FR-T5 [M]** Mọi resource thuộc đúng một org; mọi API đọc/ghi đều scoped theo org của principal; cross-org access bị chặn ở tầng query (không chỉ ở router).
+- **FR-T6 [M] (M0 discovery)** Identity introspection endpoint: `GET /v2/me` — authenticated principal (P1/P2) retrieves their own identity + org details (for P2 only). Operator: `{kind: operator, user_id, email, org: null}`. Tenant: `{kind: tenant, user_id, email, role, org: {id, name, slug, status}}`. Purpose: frontend needs to know which org context to render post-login. (Deferred from spec during implementation; discovered as essential for FE auth flow.)
 
 ### FR-A — Agent & Knowledge Management (M0 port + M3 UI)
 

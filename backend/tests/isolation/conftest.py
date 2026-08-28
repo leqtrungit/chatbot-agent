@@ -101,8 +101,7 @@ async def _create_document(
         id=uuid.uuid4(),
         org_id=org_id,
         knowledge_base_id=kb_id,
-        name=name,
-        file_path=f"/data/uploads/{name}.txt",
+        filename=name,
         mime_type="text/plain",
         status="completed",
     )

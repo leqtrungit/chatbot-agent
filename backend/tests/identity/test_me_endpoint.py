@@ -266,7 +266,7 @@ class TestMeEndpointWithDatabase:
             {
                 "sub": "tenant-user-1",
                 "email": "tenant@example.com",
-                "organization": "acme",
+                "organization": {"acme": {}},
                 "iss": test_issuer,
                 "aud": test_audience,
             }
@@ -326,7 +326,7 @@ class TestMeEndpointWithDatabase:
             {
                 "sub": "tenant-user-1",
                 "email": "tenant@example.com",
-                "organization": "suspended-org",
+                "organization": {"suspended-org": {}},
                 "iss": test_issuer,
                 "aud": test_audience,
             }
@@ -366,7 +366,7 @@ class TestMeEndpointWithDatabase:
             {
                 "sub": "tenant-user-1",
                 "email": "tenant@example.com",
-                "organization": "acme",
+                "organization": {"acme": {}},
                 "iss": test_issuer,
                 "aud": test_audience,
             }
@@ -418,7 +418,7 @@ class TestMeEndpointWithDatabase:
             {
                 "sub": "tenant-user-1",
                 "email": "tenant@example.com",
-                "organization": "globex",  # Different from "acme"
+                "organization": {"globex": {}},  # Different from "acme"
                 "iss": test_issuer,
                 "aud": test_audience,
             }

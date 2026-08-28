@@ -4,85 +4,226 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-Generic domain-knowledge chatbot agent platform. Monorepo: `backend/` (FastAPI, Python 3.12, managed by `uv`) and `frontend/` (Next.js 16 admin UI). Admins create *domains* (knowledge bases, fed by uploaded documents) and *agents* (provider/model/credentials/system-prompt/tools, created and managed entirely via the admin UI — nothing hardcoded at deploy time), assign agents to the domains they should answer for, and external platforms talk to a specific agent through a generic webhook + async job queue.
+**Agent Harness Platform** — a SaaS platform for creating, managing, and running AI agents on customer organizations' own infrastructure. Built on **multi-tenant architecture from day one**, with Keycloak OIDC for identity, PostgreSQL as the single source of truth, and Redis as ephemeral transport only (pub/sub, cache, rate-limit).
+
+Monorepo structure:
+- `backend/` — FastAPI (Python 3.12, async SQLAlchemy, managed by `uv`)
+- `frontend/` — Next.js 16 admin UI (TypeScript, shadcn/ui)
+- `infra/` — Docker Compose, Keycloak realm as-code
+
+**M0 scope (current branch: `refactor/build-harness`)**: Tenancy & Identity layer — org-scoped CRUD for agents and knowledge bases, Keycloak OIDC authentication, multi-tenant isolation. Document ingestion, chat, and Run engine belong to M1+.
+
+## Architecture — Principals & Modules
+
+Four authenticated principals (§3 HARNESS_SPEC.md):
+
+1. **Operator** (realm role `operator`) — Platform operator, creates/suspends organizations, views platform health.
+2. **Tenant Admin** (Keycloak Organization member) — Manages their organization: agents, knowledge bases, API keys, quota, trace.
+3. **Integration** (API key, server-side only) — Tenant's backend; token exchange, server-to-server chat (M2+).
+4. **End-user** (JWT from token exchange) — End-user chat; session data isolation (M2+).
+
+**Module layout** (`backend/app/`):
+
+```
+core/
+  ├── config.py — Settings from env (.env, .env.local)
+  ├── db.py — Async SQLAlchemy engine/session
+  ├── security.py — JWKS verifier, principal extraction (OperatorPrincipal, TenantPrincipal)
+  └── tenancy.py — org_query(), OrgScopedRepo (enforce org-scoping at data-access layer, NFR-SEC1)
+
+identity/
+  ├── deps.py — FastAPI dependencies: require_operator, require_org_member, require_any_principal
+  ├── org_access.py — Guard for route org_id matching (T4+)
+  └── router.py — GET /v2/me (operator / tenant info + org details)
+
+orgs/
+  ├── models.py — Organization{id, name, slug, keycloak_org_id, status}
+  ├── service.py — Org creation, KC Admin API integration
+  ├── router.py — POST /v2/operator/orgs (create), suspend, list
+  └── kc_admin.py — Keycloak Admin REST API client
+
+apikeys/
+  ├── models.py — ApiKey{org_id, name, key_hash, revoked_at}
+  ├── service.py — Create/revoke, hash validation
+  ├── router.py — GET/POST /v2/orgs/{org_id}/api-keys
+  └── deps.py — require_api_key (for M2 chat/webhook)
+
+agents/
+  ├── models.py — Agent{org_id, name, provider, model, base_url, api_key, system_prompt, ...}
+  ├── service.py — CRUD, soft delete (is_active)
+  ├── router.py — GET/POST /v2/orgs/{org_id}/agents; agent↔KB assignment
+  └── schemas.py — Request/response DTOs
+
+knowledge/
+  ├── models.py — KnowledgeBase{org_id, name, slug}, Document{org_id, kb_id, ...}, DocumentChunk{org_id, embedding}
+  ├── service.py — CRUD, file upload (stores under data/uploads/{org_id}/)
+  ├── router.py — GET/POST /v2/orgs/{org_id}/knowledge-bases; documents upload/list/delete
+  ├── storage.py — Local filesystem storage abstraction
+  └── schemas.py — DTOs
+
+main.py — App factory, /health, router mounting
+```
+
+**Database** — Single async SQLAlchemy session per request; **mutable query MUST go through `OrgScopedRepo` or `org_query()`**. Every business table has `org_id NOT NULL + FK + index`.
 
 ## Commands
 
-Infra (postgres+pgvector :5432, pgadmin :5050, redis :6379, arq worker container):
+**Infra** (from repo root):
 
 ```bash
-docker compose up -d                 # worker is built from backend/Dockerfile
-docker compose build worker          # rebuild worker after backend changes
+cp .env.example .env
+docker compose up -d                # postgres:5432, redis:6379, keycloak:8080, kc-postgres
+docker compose logs keycloak        # watch Keycloak startup; realm import logged
+docker compose exec postgres psql -U chatbot -d chatbot -c "\dt"  # verify tables
 ```
 
-Backend (from `backend/`; `uv` lives in `~/.local/bin`):
+Keycloak starts with realm `harness` pre-imported:
+- Admin user: `admin` / `admin` (credentials in `infra/keycloak/seed.sh`; change in production)
+- Client `admin-ui` (public, PKCE, redirect `http://localhost:3000/callback`)
+- Client `backend` (bearer-only, audience `backend`)
+- Realm role `operator` (for platform operator principal)
+- Organizations feature enabled
+
+**Backend** (from `backend/`; `uv` at `~/.local/bin`):
 
 ```bash
-uv sync                              # install deps (incl. dev group)
-uv run pytest -q                     # full suite — must stay green
-uv run pytest tests/agent -q         # one package
-uv run pytest tests/modules/test_domain_api.py -k create   # single test
-uv run alembic upgrade head          # migrate the docker postgres
-uv run alembic revision --autogenerate -m "..."
-uv run uvicorn app.main:app --port 8000        # API (worker runs in docker)
-uv run arq app.worker.settings.WorkerSettings  # worker locally instead of container
+uv sync                              # install deps (incl. dev, test groups)
+uv run pytest -q                     # 189 tests, TDD, no real LLM/embedding calls
+uv run pytest tests/isolation -q     # cross-tenant isolation suite (NFR-SEC1)
+uv run pytest tests/test_suite_quality.py -q  # guard: no empty tests, all tables scoped by org_id
+uv run alembic upgrade head          # migrate docker postgres
+uv run uvicorn app.main:app --port 8000  # API server
 ```
 
-Frontend (from `frontend/`):
+**Frontend** (from `frontend/`):
 
 ```bash
-npm run dev      # http://localhost:3000, login admin/admin
-npm run build    # must pass before considering FE work done
+npm install
+npm run dev      # http://localhost:3000 → Keycloak login flow
+npm run build    # must pass before FE work is done
 npm run lint
 ```
 
-DB-backed tests require the docker postgres to be running; they create/drop a separate `chatbot_test` database (see `tests/modules/conftest.py`). Config comes from `.env` at repo root (copy `.env.example`); defaults work with the compose setup.
+**Keycloak tenant admin account** (for testing FE login):
+
+Seed a user in realm `harness` with Organization membership:
+
+```bash
+docker compose exec keycloak \
+  /opt/keycloak/bin/kcadm.sh create users \
+  -r harness \
+  -s username=alice \
+  -s email=alice@example.com \
+  -s 'emailVerified=true' \
+  -s 'enabled=true' \
+  -s 'credentials=[{"type":"password","value":"alice-pass"}]'
+```
+
+Then add Alice to a Keycloak Organization (via KC UI admin console at `http://localhost:8080/admin` or API in infra/keycloak/README.md).
 
 ## Hard rules
 
-- **TDD**: write failing tests first, then implement. All backend work ships with tests.
-- **Never call a real LLM/embedding service in tests.** Inject `MockLLMProvider` / `MockEmbeddingProvider` from `backend/tests/conftest.py` (scriptable response queues). Ollama is runtime-only and may not even be installed on the host.
-- **`app/agent/` is a pure library**: it must not import FastAPI, SQLAlchemy, `app.core`, or `app.modules`. External capabilities (LLM, vector search) enter via the protocols in `app/agent/providers/base.py` and `app/agent/tools/knowledge_search.py` (`KnowledgeSearcher`). Concrete implementations live outside the package and are injected.
-- Swapping LLM provider = add one adapter in `app/agent/providers/`; never touch agent loop/builder. System prompts are per-agent free text (`Agent.system_prompt`, set via the admin UI/API, used verbatim — no domain name/description auto-injected); never hard-code prompts in Python. `AgentBuilder`'s own `DEFAULT_SYSTEM_PROMPT` (`app/agent/core/builder.py`) is the fallback when an agent's `system_prompt` is empty.
+- **TDD**: write failing tests first, then implement. Every backend change ships with tests.
+- **No real LLM/embedding in tests**. Use `MockLLMProvider`/`MockEmbeddingProvider` fixtures from `tests/conftest.py`. Ollama/OpenAI are runtime-only.
+- **Org-scoping is mandatory for all business data**: mutable queries MUST use `OrgScopedRepo(session, org_id).get/list/add/delete` or `org_query(Model, org_id)`. Grep audit: `tests/test_suite_quality.py` auto-fails any `select(Model)` in `app/*/` modules (not in `core/`). **Build the habit now** — every new module inherits this guard.
+- **`app/agent/` is a pure library** (reserved for M1+, currently empty): it must never import FastAPI, SQLAlchemy, `app.core`, or `app.modules`. External capabilities (LLM, vector search) enter via protocols. Concrete implementations live outside and are injected at runtime.
+- **Every business table must have `org_id`**: schema review checks it; test infrastructure enforces it (`tests/test_suite_quality.py`). If a colleague adds a table without `org_id`, the suite fails before merge.
+- **Cross-tenant isolation test is mandatory** for every new org-scoped route: add a case to `tests/isolation/` matrix. Build system will fail if a route is missing from the matrix (introspection-based guard — see `tests/isolation/conftest.py`). This is the single best defense against accidental cross-tenant leaks.
+- **Keycloak issuer vs JWKS URL are intentionally different**:
+  - `KEYCLOAK_ISSUER=http://localhost:8080/realms/harness` — what the token *claims* as the issuer (from browser perspective, the token says "issued by localhost:8080")
+  - `KEYCLOAK_JWKS_URL=http://keycloak:8080/realms/harness/protocol/openid-connect/certs` — where the backend *fetches* the signing keys (uses internal Docker Compose service name `keycloak`, not routable from the browser)
+  - Token issuer is set by Keycloak at token generation time; backend must verify against the token's issuer claim, so `KEYCLOAK_ISSUER` must match exactly what the token says. For local dev, both are localhost (api service also runs on host); for compose, ISSUER stays localhost (browser-facing) while JWKS_URL uses the container service name.
+- **Realm config is minimal and read-only**: `infra/keycloak/realm-export.json` is hand-maintained, not auto-exported. Keycloak rejects import if there are unknown fields — keep it sparse. Bootstrap any new test accounts or Organizations via API (`kc_admin.py`) or `seed.sh`, not by editing the export.
+- **Async SQLAlchemy relationships require `lazy="selectin"`**: lazy-load mismatch on async cause `MissingGreenlet` errors. See `backend/app/orgs/models.py` for the pattern.
+- **In tests, do not let helper functions call `mkdir()` on fixed paths**: use `tmp_path` fixture (pytest magic temp dir). Code that's green on dev (`/tmp` exists, writable) fails on CI (container sandbox, stricter). Same for file I/O: always scope to `tmp_path`.
+- **Don't import test conftest from sibling packages**: pytest registers conftest plugins, and importing from `tests.other_package.conftest` causes fixture double-registration → test collection crashes. Shared fixtures go in root `tests/conftest.py` only.
+- **Docker `next.config.ts` rewrites are for `/api/*` AND `/v2/*`** but **NOT `/auth/*` (Keycloak)**: browser talks to Keycloak directly at `http://localhost:8080`, bypassing the proxy. The rewrite setup in `frontend/next.config.ts` points these paths to `http://api:8000` (internal compose service name). This is load-bearing — Keycloak hostnames in the FE build bundle must never appear (we verified via grep of `dist/` chunks), else cross-origin fails. CORS applies to browser API calls only; admin UI traffic is same-origin via the rewrite.
+- **Known gap recorded here for future reference**: `document_chunks` does not record which embedding model produced a vector. Swapping `EMBEDDING_MODEL` to a different model of the same vector width silently returns nonsense search hits on pre-existing documents (different models = different vector spaces). Fix requires a `documents.embedding_model` column + searcher guard + re-ingest job — deferred by design, will be done in M1/M2 during the embeddings/ingestion work.
 
-## Architecture
+## Project skills (`.claude/skills/`)
 
-Three request paths share one database:
+- `/verify` — layered stack verification (pytest, FE build, docker-compose smoke, Keycloak realm import). **Status**: Updated for v2 in this milestone.
+- `/add-channel-adapter` — integrate a new platform (Telegram/Slack/etc.) via `ChannelAdapter`. **Status**: Obsolete (ChannelAdapter, webhook routes, arq jobs all removed in M0). Skill file remains but will be rewritten in M2 when chat surface is live.
+- `/extend-agent` — add an LLM provider, tool, skill. **Status**: Obsolete (agent loop, tools, `app/agent/` all removed in M0). Skill remains for reference; will be revived in M1 when Run engine lands.
+- `/db-migration` — Alembic workflow with pgvector safety checks. **Status**: Valid; single migration `001_v2_base_schema.py` created by T3, new migrations use same pattern.
 
-**Ingestion (admin, basic auth from `Settings.ADMIN_USERNAME/PASSWORD`):**
-`POST /api/domains/{id}/documents` (multipart) → `app/modules/document/router.py` stores the file under `backend/data/uploads/` + a `pending` row, then enqueues arq job `ingest_document` (`app/modules/document/jobs.py`). The worker (`app/worker/tasks.py`) calls `app/modules/document/pipeline/ingest.py`: extract (pypdf/python-docx/plain) → chunk (char-based, overlap) → embed (`EmbeddingProvider`) → `document_chunks` rows with `Vector(768)` + status transitions pending→processing→completed/failed. Pipeline steps are pure functions, individually tested.
+## Test structure
 
-**Agent management (admin, basic auth):**
-`app/modules/agent/` — `Agent` CRUD (`/api/agents`): provider (`ollama`/`openai`), model, base_url/api_key, free-text `system_prompt`, sampling params, `enable_knowledge_search`, many-to-many to `Domain` (`domain_agents`) and to `McpServer` (`agent_mcp_servers`, via `app/modules/mcp/`). Assignment can be set from either side: `PUT /api/agents/{id}/domains` or `PUT /api/domains/{id}/agents`. None of this touches `app/agent/` — it's pure config that `app/worker/tasks.py::build_agent` reads at chat time.
+```
+tests/
+├── conftest.py — root fixtures (db session, jwks_verifier, keycloak_client, create_test_org)
+├── isolation/
+│   ├── conftest.py — fixtures for multi-org/multi-principal scenarios
+│   ├── test_cross_tenant_matrix.py — access matrix (Operator/Tenant × Org A/Org B) on all org-scoped endpoints
+│   └── test_route_coverage.py — introspection guard: all /v2/ routes in isolation matrix (auto-fail if route missing)
+├── test_suite_quality.py — meta-tests: org_id on all tables, no select() outside tenancy layer, no empty tests
+├── orgs/
+│   ├── conftest.py — org-specific fixtures
+│   └── test_*.py — org CRUD, KC Admin API mock
+├── apikeys/
+│   └── test_*.py — key creation/revocation, hash validation
+├── agents/
+│   └── test_*.py — agent CRUD, soft delete, org-scoping
+└── knowledge/
+    └── test_*.py — KB CRUD, document upload (file on disk check), org-scoped paths
+```
 
-**Chat (external, requires `X-API-Key` — `app/modules/apikey/`):**
-`POST /api/webhooks/{platform}` → `ChannelRegistry` (`app/channels/registry.py`) resolves a `ChannelAdapter` which normalizes the payload to `IncomingMessage` (`agent_id`, `session_id`, `text`, `metadata`, optional `history` — **no `domain_id`**); the agent is resolved directly via `app.modules.agent.service.get_agent`; job `process_chat_job` enqueued → `202 {job_id}`. Client polls `GET /api/jobs/{job_id}` (wraps arq job status) or streams via `POST /api/chat/stream` (SSE, same contract, same optional `history`). The worker builds the agent via `build_agent` (`app/worker/tasks.py`): `AgentBuilder` + provider adapter (from `agent.provider`/`agent.base_url`/`agent.api_key`) + `KnowledgeSearchTool` scoped to **every domain the agent is assigned to** (`agent.domains`) — backed by `PgVectorKnowledgeSearcher` (`app/modules/knowledge/searcher.py`, cosine distance, only `completed` docs). An agent with exactly one domain gets the tool's original single-domain behavior; 2+ domains adds an LLM-selectable `domain` enum parameter (domain slugs) so the model picks which knowledge base to query per call — there is no domain param in the request at all, the agent decides. `agent.system_prompt` is used verbatim (no domain name/description auto-injected); empty falls back to `AgentBuilder`'s `DEFAULT_SYSTEM_PROMPT`. Conversation history (`app/modules/conversation/`) is keyed by `(agent_id, session_id)`, not domain, and is server-managed by default (loaded before the agent run, appended after). A caller can instead go **client-managed** by sending a `history` array (`[{role, content}]`, `role` restricted to `user`/`assistant`, capped at `Settings.MAX_CLIENT_HISTORY_MESSAGES`) with the request: the worker then uses that list verbatim and skips `chat_messages` entirely for that call (no load, no append) — `GET /api/conversations/{agent_id}/{session_id}/messages` will return nothing for such a session, since nothing was ever persisted. Omitting `history` is a no-op — the field's absence (not an empty array) is the signal for server-managed mode, so every existing caller is unaffected. `knowledge_search` results carry `[n]` markers that the agent cites inline in its answer; the referenced sources come back as `citations` on the job result and the SSE `done` event, and are persisted on the assistant `chat_messages` row. Adapter `send_response()` is a no-op today (polling/SSE is the response channel); future platforms implement it for push.
-
-**Agent loop** (`app/agent/core/agent.py`): dynamic Claude-style loop — call LLM, execute any tool_calls concurrently (tool errors become `is_error` results, never crash the loop), append results, repeat until plain-text answer or `max_iterations`. No hard-coded tool sequences.
-
-Adding a platform = one `ChannelAdapter` subclass registered in the registry; nothing else changes.
-
-## Project skills
-
-Reusable playbooks live in `.claude/skills/` — prefer them over improvising:
-
-- `/verify` — layered stack verification (pytest, FE build, worker container, live webhook smoke test)
-- `/add-channel-adapter` — integrate a new platform (Telegram/Slack/...) via `ChannelAdapter`
-- `/extend-agent` — add an LLM provider, tool, skill, or prompt template without touching agent logic
-- `/db-migration` — Alembic workflow incl. pgvector pitfalls autogenerate misses
+**Test database**: Separate `chatbot_test` database (auto-created/dropped per run by `tests/conftest.py`). Config from `.env` (defaults work with compose setup).
 
 ## Git workflow
 
-Two protected branches — `develop` (day-to-day, direct push allowed, no force-push/deletion) and `main` (release, PR-only, enforced for admins too, no required-approval count since it's a solo repo). Feature branches land in `develop` via PR and get deleted; cut a release by PR'ing `develop` → `main`. Full detail in [README.md](README.md#git-workflow). Don't push directly to `main` — it will be rejected.
+Two protected branches on GitHub:
 
-## Progress tracking
+- **`develop`** — day-to-day work. Push directly allowed (fast-forward or merge commits); force-push and deletion blocked. No PR required.
+- **`main`** — release branch. PR required for every change (enforced for admins too); no force-push, no deletion. No required-approval count (solo repo) — PR requirement itself is the gate.
 
-`progress.md` tracks status, backlog, and a change log. When completing significant work, update it in the same commit (status table + log row; pull backlog items when picking them up).
+Typical flow:
 
-## Gotchas
+```bash
+git checkout develop && git pull
+git checkout -b feature/my-task
+# ... commit work ...
+git push -u origin feature/my-task
+gh pr create --base develop            # land day-to-day work into develop
+```
 
-- Frontend is **Next.js 16** — conventions differ from training data (`src/proxy.ts` replaces `middleware.ts`; dynamic route `params` are async). See `frontend/AGENTS.md` and `node_modules/next/dist/docs/` before writing FE code. shadcn components here are base-ui based (`render={...}` composition), not Radix.
-- arq job kwargs must be JSON-serializable — worker tests inject fakes by monkeypatching `app.worker.tasks` symbols (`build_llm_provider`, `PgVectorKnowledgeSearcher`), not via job args.
-- Don't edit root `tests/conftest.py` casually; test-package-local fixtures go in `tests/<pkg>/conftest.py`.
-- Embeddings are **deployment-wide config**, not per-agent (unlike chat): ingestion and `knowledge_search` share the one `document_chunks.embedding` vector space, so `EMBEDDING_PROVIDER` (`ollama`/`openai`) / `EMBEDDING_BASE_URL` / `EMBEDDING_API_KEY` / `EMBEDDING_MODEL` are env-level and `build_embedding_provider` (`app/worker/tasks.py`) branches on them. `EMBEDDING_DIM` is an assertion, not a knob — it must equal the `Vector(768)` column + HNSW index, so changing it requires a migration *and* a re-ingest of every document. `embed_chunks` raises `EmbeddingDimensionMismatch` if the configured model's output width disagrees.
-- **Known gap**: `document_chunks` does not record which model produced a vector, so swapping `EMBEDDING_MODEL` for another model of the same width silently returns meaningless search hits on pre-existing documents (different models = different vector spaces). Re-ingest after any model change.
+When ready to release: open a `develop` → `main` PR as the release gate.
+
+## Progress & Status
+
+`progress.md` tracks project status and change log. Update it in the same commit as significant work (add row to status table, move backlog items, log the change). Current milestone: **M0 (Tenancy & Identity)** — test cách ly cross-tenant xanh; Keycloak realm working; org/apikey/agent/KB modules org-scoped and isolated. See `docs/plans/M0.md` for detailed task breakdown and DoD.
+
+## Known gaps (deferred to M1+)
+
+- **Document ingestion** — M0 has upload + DB row `pending`, no runtime processing. Ingest job belongs to M1 (Postgres-native scheduler, ADR-1).
+- **Chat & Embed** — webhook, SSE, widget, token exchange (FR-C1..C4) — all M2.
+- **Run engine** — durable Run record, event sourcing, lease+heartbeat scheduling, RunEvents (FR-R1..R8) — M1.
+- **Conversations** — server-managed history (FR-C2) — M2.
+- **End-user directory & privacy** — end-user CRUD, block, data erasure (FR-O7, O8, O9) — M2/M3.
+- **Control plane observability** — Run list, trace viewer, conversation viewer, usage dashboard, quota (FR-O1..O5) — M3.
+- **Channel adapters** — Telegram, Slack, Zalo (M2+ after embed surface stable).
+- **MCP server registration** — schema/model exist, admin UI for `/mcp-servers` deferred to M3.
+
+## .env configuration
+
+See `.env.example` for all variables. Key ones for local dev:
+
+```bash
+# Database
+DATABASE_URL=postgresql+asyncpg://chatbot:chatbot@localhost:5432/chatbot
+REDIS_URL=redis://localhost:6379/0
+
+# Keycloak
+KEYCLOAK_ISSUER=http://localhost:8080/realms/harness
+KEYCLOAK_JWKS_URL=http://keycloak:8080/realms/harness/protocol/openid-connect/certs
+KEYCLOAK_AUDIENCE=backend
+
+# Document storage
+UPLOAD_DIR=data/uploads
+
+# CORS
+CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
+```
+
+`docker compose` reads these and passes them to containers. Frontend reads `NEXT_PUBLIC_API_URL` from `frontend/.env.local`.
+
